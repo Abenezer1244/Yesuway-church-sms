@@ -273,9 +273,9 @@ class MultiGroupBroadcastSMS:
                 media_text = f" 📎 [{media_count} file(s)]"
         
         if message_type == 'reaction':
-            formatted_message = f"💭 {sender['name']} responded:\n{message_text}{media_text}\n\n📱 Reply to join the conversation!"
+            formatted_message = f"💭 {sender['name']} responded:\n{message_text}{media_text}"
         else:
-            formatted_message = f"💬 {sender['name']}:\n{message_text}{media_text}\n\n📱 Reply to join the conversation!"
+            formatted_message = f"💬 {sender['name']}:\n{message_text}{media_text}"
         
         # Send to ALL members across ALL groups
         sent_count = 0
@@ -405,7 +405,6 @@ class MultiGroupBroadcastSMS:
         """Main SMS handler for multi-group broadcasting with media support"""
         from_phone = self.clean_phone_number(from_phone)
         message_body = message_body.strip() if message_body else ""
-        message_upper = message_body.upper()
         
         print(f"📨 Processing broadcast: {from_phone} -> {message_body}")
         if media_urls:
@@ -416,91 +415,8 @@ class MultiGroupBroadcastSMS:
         # Ensure member exists (auto-add to Group 1 if new)
         member = self.get_member_info(from_phone)
         
-        # HELP command
-        if message_upper in ['HELP', 'H', '?']:
-            help_text = "🏛️ MULTI-GROUP BROADCAST SYSTEM\n\n"
-            help_text += "📢 HOW IT WORKS:\n"
-            help_text += "• Text anything → Goes to ALL 3 congregation groups!\n"
-            help_text += "• All reactions → Go to ALL groups\n"
-            help_text += "• Everyone sees everything across all groups\n"
-            help_text += "• Send photos/audio → MMS group gets media, others get text\n\n"
-            help_text += "📱 COMMANDS:\n"
-            help_text += "• HELP - Show this message\n"
-            help_text += "• STATS - Show congregation statistics\n"
-            help_text += "• GROUPS - Show which groups you're in\n\n"
-            
-            if self.is_admin(from_phone):
-                help_text += "👑 ADMIN COMMANDS:\n"
-                help_text += "• ADD [phone] [name] TO [group_id] - Add member\n"
-                help_text += "• RECENT - View recent broadcasts\n"
-            
-            help_text += "💬 Just type your message to broadcast to everyone!\n"
-            help_text += "📸 Send photos/audio and they'll be shared with MMS-capable members!"
-            return help_text
-        
-        # STATS command
-        elif message_upper == 'STATS':
-            return self.get_congregation_stats()
-        
-        # GROUPS command
-        elif message_upper == 'GROUPS':
-            groups = self.get_member_groups(from_phone)
-            if not groups:
-                return "You're not in any groups yet. Contact admin to be added."
-            
-            response = f"📋 Your Groups:\n"
-            for group in groups:
-                response += f"  • {group['name']}\n"
-            response += f"\n💬 Your messages go to ALL congregation groups!"
-            
-            if self.supports_mms(from_phone):
-                response += f"\n📸 You can send photos/audio (MMS supported)!"
-            
-            return response
-        
-        # ADMIN COMMANDS
-        elif self.is_admin(from_phone):
-            if message_upper.startswith('ADD ') and ' TO ' in message_upper:
-                try:
-                    # Parse: ADD +1234567890 John Smith TO 1
-                    parts = message_body[4:].split(' TO ')
-                    if len(parts) == 2:
-                        contact_info = parts[0].strip().split(' ', 1)
-                        phone = contact_info[0]
-                        name = contact_info[1] if len(contact_info) > 1 else f"Member {phone[-4:]}"
-                        group_id = int(parts[1].strip())
-                        
-                        self.add_member_to_group(phone, group_id, name)
-                        return f"✅ Added {name} ({phone}) to Group {group_id}"
-                    else:
-                        return "Format: ADD [phone] [name] TO [group_id]"
-                except Exception as e:
-                    return f"❌ Error: {e}"
-            
-            elif message_upper == 'RECENT':
-                conn = sqlite3.connect('church_broadcast.db')
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT from_name, message_text, message_type, has_media, media_count, sent_at 
-                    FROM broadcast_messages 
-                    ORDER BY sent_at DESC 
-                    LIMIT 5
-                ''')
-                messages = cursor.fetchall()
-                conn.close()
-                
-                if not messages:
-                    return "No recent broadcasts."
-                
-                result = "📋 Recent Broadcasts:\n\n"
-                for msg in messages:
-                    media_info = f" +{msg[4]} media" if msg[3] else ""
-                    result += f"👤 {msg[0]} ({msg[2]})\n💬 {msg[1][:50]}{media_info}...\n🕐 {msg[5][:16]}\n\n"
-                return result
-        
         # DEFAULT: Broadcast message with media to ALL groups
-        else:
-            return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
+        return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
 
 # Initialize the system
 broadcast_sms = MultiGroupBroadcastSMS()
