@@ -483,6 +483,7 @@ def handle_sms_with_media(self, from_phone, message_body, media_urls):
     
     finally:
         print(f"🏁 ===== MESSAGE PROCESSING COMPLETED =====\n")
+
         
 # Initialize the system
 print("🏛️ Initializing Church SMS System...")
