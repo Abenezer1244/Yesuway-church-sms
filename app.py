@@ -439,6 +439,7 @@ def setup_your_congregation():
     # GROUP 3 MEMBERS (MMS Group) - REPLACE WITH REAL NUMBERS
     print("📱 Adding Group 3 members...")
     broadcast_sms.add_member_to_group("+12065910943", 3, "sami drum")
+    broadcast_sms.add_member_to_group("+12064349652", 3, "yab")
     
     print("✅ All 3 groups setup complete!")
     print("💬 Now when anyone texts, it goes to ALL groups!")
