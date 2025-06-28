@@ -1,212 +1,588 @@
-# Church SMS Broadcasting System
+# YesuWay Church SMS Broadcasting System
 
-A Python-based SMS broadcasting system built with Twilio that allows church congregation members to send messages that are automatically shared with the entire community.
+> **A unified SMS communication platform that transforms multiple church groups into one seamless conversation for the entire congregation.**
 
-## 🏛️ System Overview
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://python.org)
+[![Flask](https://img.shields.io/badge/Flask-2.3.3-green.svg)](https://flask.palletsprojects.com)
+[![Twilio](https://img.shields.io/badge/Twilio-SMS%2FMMS-red.svg)](https://twilio.com)
+[![License](https://img.shields.io/badge/License-Church%20Use-brightgreen.svg)](#license)
 
-This system creates a unified SMS communication platform for churches where:
-- Any congregation member can send a message to the church number
-- The message is automatically broadcast to all groups
-- Members are organized into different groups (families, youth, seniors, etc.)
-- Administrators have special privileges for system management
+## 🏛️ Overview
 
-## 🚀 Features
+The YesuWay Church SMS Broadcasting System is a production-ready communication platform that allows any congregation member to send a message to one number, which then broadcasts that message to the entire church community across multiple groups. This creates a unified conversation where everyone stays connected, regardless of which original group they belonged to.
 
-- **Multi-Group Broadcasting**: Organize members into different groups
-- **Automatic Message Relay**: Messages sent to church number broadcast to all members
-- **Admin Controls**: Special commands for administrators
-- **Help System**: Built-in help commands
-- **Webhook Integration**: Real-time message processing via Twilio webhooks
-- **Group Management**: Easy addition and management of congregation members
+### ✨ Key Benefits
 
-## 📋 Prerequisites
+- **🔗 Unified Communication**: Transforms 3+ separate SMS groups into one church-wide conversation
+- **📱 Universal Access**: Works with any phone (iPhone, Android, flip phones)
+- **📸 Rich Media Support**: Share photos, audio, and videos with the entire congregation
+- **👑 Admin Controls**: Church leaders can manage members and view statistics via SMS
+- **🤖 Auto-Management**: New members are automatically added when they text
+- **☁️ 24/7 Operation**: Cloud-hosted for reliable, always-on service
 
-- Python 3.7+
-- Twilio Account (with A2P 10DLC registration for production use)
-- Flask web framework
-- Internet connection for webhook functionality
+---
 
-## 🛠️ Installation
+## 🚀 Quick Start
 
-1. **Clone or download the project files**
+### 1. **Text the Church Number**
+Send any message to **+14252875212** and it broadcasts to everyone!
 
-2. **Install required Python packages:**
-```bash
-pip install twilio flask
+### 2. **Send Media**
+Share photos, voice messages, or videos - everyone receives them.
+
+### 3. **Get Help**
+Text `HELP` to see all available commands.
+
+### 4. **Admin Functions**
+Church leaders can add members: `ADD +1234567890 John Smith TO 1`
+
+---
+
+## 📋 System Architecture
+
+```
+┌─────────────────┐    ┌──────────────┐    ┌─────────────────────┐
+│   Church Member │───▶│ Twilio SMS   │───▶│  YesuWay System     │
+│   +1234567890   │    │ +14252875212 │    │  (Cloud Hosted)     │
+└─────────────────┘    └──────────────┘    └─────────────────────┘
+                                                       │
+                       ┌────────────────────────────────┼────────────────────────────────┐
+                       ▼                                ▼                                ▼
+            ┌─────────────────┐              ┌─────────────────┐              ┌─────────────────┐
+            │ Congregation    │              │ Congregation    │              │ Congregation    │
+            │ Group 1         │              │ Group 2         │              │ Group 3 (MMS)   │
+            │ (SMS Members)   │              │ (SMS Members)   │              │ (SMS+MMS)       │
+            └─────────────────┘              └─────────────────┘              └─────────────────┘
 ```
 
-3. **Get Twilio credentials:**
-   - Sign up at [Twilio.com](https://twilio.com)
-   - Get your Account SID and Auth Token
-   - Purchase a phone number (example: +14252875212)
+### Database Schema
 
-4. **Configure Twilio webhook:**
+The system uses SQLite with 6 core tables:
+
+| Table | Purpose |
+|-------|---------|
+| `groups` | Stores the 3 congregation groups |
+| `members` | All congregation members with contact info |
+| `group_members` | Links members to their groups |
+| `broadcast_messages` | Complete message history |
+| `message_media` | Photos, audio, and video attachments |
+| `delivery_log` | Delivery success/failure tracking |
+
+---
+
+## 🛠️ Installation & Deployment
+
+### Prerequisites
+
+- Python 3.9+
+- Twilio Account with A2P 10DLC registration
+- Cloud hosting account (Render.com recommended)
+- GitHub account for code deployment
+
+### Local Development Setup
+
+1. **Clone the Repository**
 ```bash
-twilio phone-numbers:update +14252875212 --sms-url="http://localhost:5000/webhook/sms"
+git clone https://github.com/yourusername/yesuway-church-sms.git
+cd yesuway-church-sms
 ```
+
+2. **Install Dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+3. **Environment Configuration**
+Create a `.env` file:
+```env
+TWILIO_ACCOUNT_SID=your_account_sid_here
+TWILIO_AUTH_TOKEN=your_auth_token_here
+TWILIO_PHONE_NUMBER=+14252875212
+```
+
+4. **Run Locally**
+```bash
+python app.py
+```
+
+### Production Deployment (Render.com)
+
+1. **Fork this repository** to your GitHub account
+
+2. **Create Render Account**
+   - Sign up at [render.com](https://render.com)
+   - Connect your GitHub account
+
+3. **Deploy Web Service**
+   - New → Web Service
+   - Connect your forked repository
+   - Configure:
+     - **Runtime**: Python 3
+     - **Build Command**: `pip install -r requirements.txt`
+     - **Start Command**: `python app.py`
+
+4. **Set Environment Variables**
+   ```
+   TWILIO_ACCOUNT_SID = your_account_sid
+   TWILIO_AUTH_TOKEN = your_auth_token  
+   TWILIO_PHONE_NUMBER = +14252875212
+   ```
+
+5. **Configure Twilio Webhook**
+   - Go to Twilio Console → Phone Numbers
+   - Set webhook URL: `https://your-app.onrender.com/webhook/sms`
+   - Method: POST
+
+---
+
+## 📱 User Guide
+
+### For Congregation Members
+
+#### **Sending Messages**
+```
+Text: "Prayer meeting tonight at 7pm!"
+Result: Message goes to entire congregation
+```
+
+#### **Sharing Media**
+- Send photos, voice recordings, or videos
+- Everyone receives the actual media files
+- Perfect for sharing service moments or announcements
+
+#### **Getting Help**
+```
+Text: HELP
+Response: Complete command guide
+```
+
+#### **Checking Groups**
+```
+Text: GROUPS
+Response: Shows which groups you belong to
+```
+
+### For Church Administrators
+
+#### **Adding New Members**
+```
+ADD +12065551234 John Smith TO 1
+ADD +1234567890 Mary Johnson TO 2
+ADD 206-555-9999 Robert Wilson TO 3
+```
+
+#### **Viewing Statistics**
+```
+Text: STATS
+Response: 
+📊 CONGREGATION STATISTICS
+
+👥 Total Active Members: 25
+📋 Group Breakdown:
+  • Congregation Group 1: 12 members
+  • Congregation Group 2: 8 members  
+  • Congregation Group 3: 7 members
+📈 Messages this week: 15
+📎 Media messages: 6
+```
+
+#### **Recent Activity**
+```
+Text: RECENT
+Response: Last 5 broadcast messages with details
+```
+
+---
 
 ## ⚙️ Configuration
 
-### Update Twilio Credentials
+### Current Group Setup
 
-Replace these placeholders in the code with your actual Twilio credentials:
+| Group ID | Name | Type | Description |
+|----------|------|------|-------------|
+| 1 | Congregation Group 1 | SMS | First congregation group |
+| 2 | Congregation Group 2 | SMS | Second congregation group |
+| 3 | Congregation Group 3 | MMS | Third group with media support |
 
-```python
-TWILIO_ACCOUNT_SID = "your_account_sid_here"  # Replace with real SID
-TWILIO_AUTH_TOKEN = "your_auth_token_here"    # Replace with real Token
-TWILIO_PHONE_NUMBER = "+14252875212"          # Your Twilio phone number
-```
+### Adding Your Congregation
 
-### Configure Your Congregation
-
-Modify the `setup_your_congregation()` function to add your church members:
+Edit the `setup_your_congregation()` function in `app.py`:
 
 ```python
 def setup_your_congregation():
-    # Pastor/Admin (can use admin commands)
+    # Add yourself as admin
     broadcast_sms.add_member_to_group("+14257729189", 1, "Pastor Mike", is_admin=True)
     
-    # Group 1: Church Family
+    # Group 1 Members
     broadcast_sms.add_member_to_group("+12065551001", 1, "John Smith")
     broadcast_sms.add_member_to_group("+12065551002", 1, "Mary Johnson")
     
-    # Group 2: Youth Group
-    broadcast_sms.add_member_to_group("+12065551003", 2, "Sarah Wilson")
-    broadcast_sms.add_member_to_group("+12065551004", 2, "David Brown")
+    # Group 2 Members  
+    broadcast_sms.add_member_to_group("+12065551003", 2, "David Wilson")
+    broadcast_sms.add_member_to_group("+12065551004", 2, "Sarah Davis")
     
-    # Group 3: Seniors
-    broadcast_sms.add_member_to_group("+12065551005", 3, "Robert Davis")
-    broadcast_sms.add_member_to_group("+12065551006", 3, "Linda Miller")
+    # Group 3 Members (MMS)
+    broadcast_sms.add_member_to_group("+12065551005", 3, "Robert Miller")
+    broadcast_sms.add_member_to_group("+12065551006", 3, "Lisa Garcia")
 ```
 
-## 🏃‍♂️ Running the System
+---
 
-1. **Start the Flask application:**
-```bash
-python your_app_name.py
+## 🔧 Advanced Features
+
+### Auto-Member Registration
+
+When someone new texts your church number:
+1. **Automatically added** to the system
+2. **Assigned to Group 1** by default
+3. **Can immediately participate** in conversations
+4. **Admin can reassign** to different groups later
+
+### Message Processing Flow
+
+```python
+# Incoming message processing
+def handle_sms_with_media(self, from_phone, message_body, media_urls):
+    # 1. Identify sender
+    # 2. Check for commands (HELP, STATS, etc.)
+    # 3. Process admin commands if applicable
+    # 4. Broadcast to all groups if regular message
+    # 5. Log everything for analytics
 ```
 
-2. **You should see:**
-```
-✅ Added Pastor Mike (+14257729189) to Group 1
-✅ Added John Smith (+12065551001) to Group 1
-✅ Added Mary Johnson (+12065551002) to Group 1
-...
-🚀 Church SMS system initialized!
-📱 Church number: +14252875212
-👥 Total members: X
-📊 Groups: Y
- * Running on all addresses (0.0.0.0)
- * Running on http://127.0.0.1:5000
- * Running on http://[your-ip]:5000
-```
+### Media Handling
 
-## 📱 How to Use
+The system supports:
+- **📸 Images**: JPG, PNG, GIF
+- **🎵 Audio**: MP3, WAV, voice recordings
+- **🎥 Video**: MP4, MOV (up to Twilio limits)
+- **📎 Documents**: PDF, TXT (basic support)
 
-### For Congregation Members:
+### Delivery Tracking
 
-**Send a regular message:**
-- Text anything to +14252875212
-- Your message will be broadcast to all groups
-- Example: "Prayer meeting tonight at 7pm!"
+Every message is tracked with:
+- Sender information
+- Recipient delivery status
+- Group-based analytics
+- Failure reason logging
+- Timestamp recording
 
-**Get help:**
-- Text "HELP" to +14252875212
-- Receive usage instructions
+---
 
-### For Administrators:
+## 📊 Analytics & Monitoring
 
-**View system status:**
-- Text "STATUS" to get member count and group info
+### Built-in Analytics
 
-**All admin commands work the same as regular messages but provide additional system information**
+The system provides comprehensive analytics:
 
-## 🏗️ System Architecture
+#### **Message Volume Tracking**
+- Total messages per week/month
+- Media vs text message ratios
+- Peak usage times
+- Member participation rates
 
-```
-Congregation Member → Twilio Phone Number → Flask Webhook → Broadcasting Logic → All Members
-```
+#### **Delivery Monitoring**
+- Success/failure rates per recipient
+- Group-based delivery statistics
+- Failed delivery troubleshooting
+- Performance metrics
 
-1. **Member sends SMS** to church Twilio number
-2. **Twilio receives message** and sends webhook to Flask app
-3. **Flask app processes** the message and sender information
-4. **Broadcasting system** sends message to all group members
-5. **All members receive** the original message from the sender
+#### **Member Analytics**
+- Active vs inactive members
+- Group distribution
+- Admin activity tracking
+- New member onboarding metrics
 
-## 🔧 Twilio A2P 10DLC Registration
+### Health Monitoring
 
-For production use with multiple recipients, you must complete A2P 10DLC registration:
+- **Health Check Endpoint**: `https://your-app.onrender.com/`
+- **Render Dashboard**: Built-in monitoring and logs
+- **Twilio Console**: SMS delivery analytics
+- **Database Logs**: Complete audit trail
 
-### Registration Details Used:
-- **Campaign Type:** Mixed (church communications)
-- **Description:** Church congregation communication system for sharing messages, announcements, and prayer requests among members
-- **Sample Messages:**
-  - "Welcome to our church family SMS! Send your messages to stay connected with our congregation. Sunday service is at 10am. God bless!"
-  - "Prayer request from John: Please pray for my family during this difficult time. Thank you for your prayers and support."
-  - "Church announcement: Potluck dinner this Saturday at 6pm in the fellowship hall. Bring a dish to share. See you there!"
-  - "Reminder: Bible study tonight at 7pm in the sanctuary. We're studying Acts chapter 2. All are welcome to join us."
-  - "Thank you for joining us today! Next week's service theme is 'Faith in Action'. Have a blessed week and see you Sunday."
+---
 
-### Opt-in Process:
-- **Consent:** Members voluntarily text church number or request addition during services
-- **Keywords:** JOIN, SUBSCRIBE, CHURCH
-- **Opt-out:** Text STOP or contact church leadership
+## 🔐 Security & Privacy
 
-## 💰 Cost Estimates
+### Security Features
 
-Based on 50 congregation members:
+- **🔐 Environment Variables**: No hardcoded credentials
+- **🛡️ Input Validation**: Phone number sanitization
+- **🚫 SQL Injection Protection**: Parameterized queries
+- **📱 Rate Limiting**: Prevents spam (configurable)
+- **👑 Admin Privileges**: Secure admin-only functions
 
-- **SMS Cost:** $0.0075 per message
-- **Phone Number:** ~$1/month
-- **Example:** 25 messages/week = 100 messages/month × 50 people = 5,000 SMS = ~$38.50/month
+### Privacy Considerations
+
+- **📞 Phone Number Privacy**: Numbers stored securely
+- **💬 Message Logging**: Complete audit trail maintained
+- **🗑️ Data Retention**: Configurable message retention
+- **👥 Member Consent**: Opt-in based system
+- **🚪 Easy Opt-out**: Text "STOP" to unsubscribe
+
+### GDPR & Compliance
+
+- Member data stored with consent
+- Easy data deletion upon request
+- Audit trail for compliance
+- Secure data transmission via HTTPS
+
+---
+
+## 💰 Cost Analysis
+
+### Twilio Costs (Production)
+
+| Component | Cost | Notes |
+|-----------|------|-------|
+| Phone Number | $1.00/month | One-time setup |
+| SMS Messages | $0.0075 each | Per message sent |
+| MMS Messages | $0.02 each | Photos/audio/video |
+
+### Example Costs for YesuWay
+
+**Current Setup**: 3 members, testing phase
+- **Estimated**: $5-10/month
+
+**50 Members, 25 messages/week**:
+- Messages: 25 × 4 weeks × 50 people = 5,000 SMS
+- Cost: 5,000 × $0.0075 = $37.50/month
+- Total: ~$38.50/month
+
+**100 Members, 20 messages/week**:
+- Messages: 20 × 4 weeks × 100 people = 8,000 SMS  
+- Cost: 8,000 × $0.0075 = $60/month
+- Total: ~$61/month
+
+### Hosting Costs
+
+- **Render.com**: FREE tier (perfect for churches)
+- **Alternative**: Heroku ($7/month for hobby tier)
+
+---
 
 ## 🧪 Testing
 
-### Trial Mode Testing:
-1. **Verify phone numbers** in Twilio Console
-2. **Add only verified numbers** to your congregation setup
-3. **Test with verified members** (messages will include trial account prefix)
-4. **Upgrade after A2P approval** for full functionality
+### Testing Commands
 
-### Testing Commands:
-```python
-# Add test function for direct SMS testing
-def test_sms_directly():
-    print("🧪 Testing SMS directly...")
-    result = broadcast_sms.broadcast_to_all_groups("+14257729189", "Test message")
-    print(f"Result: {result}")
+Text these to your church number to test functionality:
+
+#### **Basic Commands**
 ```
+HELP        # Shows all available commands
+STATS       # Displays congregation statistics  
+GROUPS      # Shows your group memberships
+```
+
+#### **Admin Commands** (Admin only)
+```
+ADD +1234567890 Test User TO 1    # Adds new member
+RECENT                            # Shows recent broadcasts
+```
+
+#### **Media Testing**
+- Send a photo with text
+- Send a voice recording
+- Send a video message
+
+### Local Testing
+
+1. **Install ngrok** for webhook testing:
+```bash
+ngrok http 5000
+```
+
+2. **Update Twilio webhook** to ngrok URL temporarily
+
+3. **Test all functions** before production deployment
+
+### Production Testing
+
+1. **Verify webhook** is receiving messages
+2. **Test with multiple members** from different groups
+3. **Confirm media delivery** across all recipients
+4. **Validate admin commands** work properly
+
+---
 
 ## 🚨 Troubleshooting
 
-### Common Issues:
+### Common Issues
 
-**Messages not sending:**
-- ✅ Check Twilio credentials are correct
-- ✅ Verify A2P 10DLC registration status
-- ✅ Ensure webhook URL is configured
-- ✅ Check Python terminal for error messages
+#### **Messages Not Sending**
+```bash
+# Check Render logs
+https://dashboard.render.com/your-app/logs
 
-**Webhook not receiving messages:**
-- ✅ Confirm Flask app is running
-- ✅ Verify webhook URL in Twilio console
-- ✅ Check firewall/network settings
+# Verify Twilio webhook
+curl -X POST https://your-app.onrender.com/webhook/sms \
+  -d "From=+1234567890&Body=test"
+```
 
-**Members not receiving messages:**
-- ✅ Verify phone number format (+1XXXXXXXXXX)
-- ✅ Check if numbers are in trial verified list
-- ✅ Confirm A2P registration is approved
+#### **Media Not Delivering**
+1. **Verify A2P 10DLC** includes MMS permissions
+2. **Check phone number** supports MMS in Twilio Console
+3. **Test MMS** directly from Twilio Console
+
+#### **Webhook Failures**
+- Ensure webhook URL is correct
+- Verify app is running (check health endpoint)
+- Check Render deployment status
+
+### Debug Mode
+
+Enable debug logging in production:
+```python
+# In app.py, temporarily set:
+app.run(host='0.0.0.0', port=port, debug=True)
+```
+
+### Error Logs
+
+Check these sources for troubleshooting:
+- **Render Dashboard**: Application logs
+- **Twilio Console**: SMS delivery logs  
+- **Database**: Check church_broadcast.db
+- **Browser**: Test health endpoint
+
+---
+
+## 🔄 Maintenance
+
+### Regular Maintenance Tasks
+
+#### **Weekly**
+- Monitor message delivery rates
+- Check for new member registrations
+- Review error logs
+
+#### **Monthly**  
+- Analyze congregation statistics
+- Update member information
+- Review Twilio usage and costs
+
+#### **Quarterly**
+- Database backup and cleanup
+- Security review and updates
+- Feature enhancement planning
+
+### Updating the System
+
+```bash
+# Make changes to code
+git add .
+git commit -m "Update message formatting"
+git push origin main
+
+# Render auto-deploys from GitHub
+# No manual deployment needed
+```
+
+### Database Backup
+
+```bash
+# Local backup
+cp church_broadcast.db church_backup_$(date +%Y%m%d).db
+
+# Render backup (download via dashboard)
+# Or implement automated backup script
+```
+
+---
+
+## 🤝 Contributing
+
+### For Church Tech Teams
+
+1. **Fork the repository**
+2. **Create feature branch** (`git checkout -b feature/new-command`)
+3. **Make changes** and test thoroughly
+4. **Commit changes** (`git commit -m 'Add new feature'`)
+5. **Push to branch** (`git push origin feature/new-command`)
+6. **Create Pull Request**
+
+### Customization Ideas
+
+- **Custom commands** for your church's needs
+- **Event scheduling** integration
+- **Prayer request** management
+- **Attendance tracking** via SMS
+- **Offering reminders** and tracking
+
+---
 
 ## 📞 Support
 
-- **Twilio Documentation:** [docs.twilio.com](https://docs.twilio.com)
-- **A2P 10DLC Info:** [Twilio A2P 10DLC Guide](https://www.twilio.com/docs/sms/a2p-10dlc)
-- **Flask Documentation:** [flask.palletsprojects.com](https://flask.palletsprojects.com)
+### Documentation
+- **Twilio SMS Guide**: [docs.twilio.com/sms](https://docs.twilio.com/sms)
+- **Flask Documentation**: [flask.palletsprojects.com](https://flask.palletsprojects.com)
+- **Render Deployment**: [render.com/docs](https://render.com/docs)
+
+### Getting Help
+
+For technical issues:
+1. **Check logs** in Render dashboard
+2. **Review Twilio Console** for delivery issues
+3. **Test webhook** manually
+4. **Contact church tech team** for assistance
+
+### Feature Requests
+
+Have ideas for new features? Consider:
+- **Automated service reminders**
+- **Bible verse of the day**
+- **Prayer request management**
+- **Event RSVP tracking**
+- **Volunteer coordination**
+
+---
 
 ## 📄 License
 
-This project is created for church community use. Modify and distribute as needed for your congregation.
+This project is created specifically for church community use. Feel free to modify and distribute for your congregation's needs.
+
+### Usage Terms
+- ✅ **Church and religious organization use**
+- ✅ **Modification for your specific needs**
+- ✅ **Sharing with other churches**
+- ❌ **Commercial resale or licensing**
+
+---
 
 ## 🙏 Acknowledgments
 
-Built to strengthen church community communication and fellowship through modern technology while maintaining the personal touch of direct messaging between congregation members.
+**Built to strengthen church community communication and fellowship through modern technology while maintaining the personal touch of direct messaging between congregation members.**
+
+### Technologies Used
+- **Python 3.9+** - Core application language
+- **Flask** - Web framework for webhook handling
+- **Twilio** - SMS/MMS messaging service
+- **SQLite** - Database for member and message storage
+- **Render.com** - Cloud hosting platform
+
+### Special Thanks
+- **YesuWay Church Community** - For inspiring this unified communication solution
+- **Twilio Developer Community** - For excellent SMS/MMS documentation
+- **Open Source Community** - For the foundational technologies
+
+---
+
+## 📈 Roadmap
+
+### Upcoming Features
+- [ ] **Scheduled Messages** - Send announcements at specific times
+- [ ] **Prayer Request Management** - Dedicated prayer tracking
+- [ ] **Event RSVP System** - Track attendance for church events
+- [ ] **Multi-language Support** - Serve diverse congregations
+- [ ] **Voice Message Transcription** - Convert audio to text
+- [ ] **Integration APIs** - Connect with church management systems
+
+### Long-term Vision
+- **Multi-church deployment** - Serve multiple congregations
+- **Advanced analytics** - Detailed engagement metrics
+- **Mobile app companion** - Enhanced user experience
+- **AI-powered features** - Smart message categorization
+
+---
+
+**🏛️ May this system strengthen the bonds of fellowship in your church community and help spread God's love through enhanced communication! 🙏**
