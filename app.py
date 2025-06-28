@@ -323,22 +323,15 @@ class MultiGroupBroadcastSMS:
                 for group in recipient_groups:
                     self.log_delivery(message_id, recipient['phone'], group['id'], 'failed')
         
-        # Create detailed confirmation
-        confirmation = f"✅ Message broadcast to ALL GROUPS!\n"
-        confirmation += f"📊 Total sent: {sent_count} members\n"
-        
-        if media_urls:
-            confirmation += f"📎 Media: {sent_count} MMS sent to all members\n"
-        
-        if group_breakdown:
-            confirmation += "📋 Group breakdown:\n"
-            for group_name, count in group_breakdown.items():
-                confirmation += f"  • {group_name}: {count} members\n"
-        
-        if failed_count > 0:
-            confirmation += f"⚠️ Failed deliveries: {failed_count}"
-        
-        return confirmation
+        # Create simple confirmation (only for admin)
+        if self.is_admin(from_phone):
+            confirmation = f"✅ Sent to {sent_count} members"
+            if failed_count > 0:
+                confirmation += f" ({failed_count} failed)"
+            return confirmation
+        else:
+            # For regular members, no confirmation message
+            return None
     
     def log_delivery(self, message_id, to_phone, to_group_id, status):
         """Log message delivery per group"""
@@ -564,11 +557,16 @@ def handle_sms():
             # Process text + media
             response_message = broadcast_sms.handle_sms_with_media(from_number, message_body, media_urls)
             
-            resp = MessagingResponse()
-            resp.message(response_message)
-            
-            print(f"📤 Response: {response_message}")
-            return str(resp)
+            # Only send response if there's a message (admin confirmations or help commands)
+            if response_message:
+                resp = MessagingResponse()
+                resp.message(response_message)
+                print(f"📤 Response: {response_message}")
+                return str(resp)
+            else:
+                # No response needed (regular member message was broadcast)
+                print(f"📤 Message processed, no response sent")
+                return "OK", 200
         else:
             print("❌ Missing phone number")
             return "OK", 200
