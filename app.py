@@ -16,7 +16,7 @@ app = Flask(__name__)
 class MultiGroupBroadcastSMS:
     def __init__(self):
         self.client = None
-        if TWILIO_ACCOUNT_SID != "your_account_sid_here":
+        if TWILIO_ACCOUNT_SID:
             self.client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
         self.init_database()
         
@@ -67,9 +67,23 @@ class MultiGroupBroadcastSMS:
                 from_phone TEXT NOT NULL,
                 from_name TEXT NOT NULL,
                 message_text TEXT NOT NULL,
-                message_type TEXT DEFAULT 'broadcast', -- broadcast, reaction, announcement
-                thread_id INTEGER NULL,                 -- for conversation threading
+                message_type TEXT DEFAULT 'broadcast',
+                has_media BOOLEAN DEFAULT FALSE,
+                media_count INTEGER DEFAULT 0,
+                thread_id INTEGER NULL,
                 sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Media attachments table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS message_media (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                media_url TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (message_id) REFERENCES broadcast_messages (id)
             )
         ''')
         
@@ -211,8 +225,14 @@ class MultiGroupBroadcastSMS:
             self.add_member_to_group(phone_number, 1, name)  # Add to Group 1 by default
             return {"name": name, "is_admin": False}
     
-    def broadcast_to_all_groups(self, from_phone, message_text, message_type='broadcast'):
-        """Send message to EVERYONE across ALL 3 groups"""
+    def supports_mms(self, phone_number):
+        """Check if a member's groups support MMS"""
+        groups = self.get_member_groups(phone_number)
+        # Group 3 is the MMS group, others are SMS only
+        return any(group['id'] == 3 for group in groups)
+    
+    def broadcast_with_media(self, from_phone, message_text, media_urls, message_type='broadcast'):
+        """Send message WITH media to EVERYONE across ALL 3 groups"""
         sender = self.get_member_info(from_phone)
         all_recipients = self.get_all_members_across_groups(exclude_phone=from_phone)
         
@@ -223,42 +243,93 @@ class MultiGroupBroadcastSMS:
         conn = sqlite3.connect('church_broadcast.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO broadcast_messages (from_phone, from_name, message_text, message_type) 
-            VALUES (?, ?, ?, ?)
-        ''', (from_phone, sender['name'], message_text, message_type))
+            INSERT INTO broadcast_messages (from_phone, from_name, message_text, message_type, has_media, media_count) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (from_phone, sender['name'], message_text, message_type, bool(media_urls), len(media_urls)))
         message_id = cursor.lastrowid
+        
+        # Store media URLs
+        for media in media_urls:
+            cursor.execute('''
+                INSERT INTO message_media (message_id, media_url, media_type) 
+                VALUES (?, ?, ?)
+            ''', (message_id, media['url'], media['type']))
+        
         conn.commit()
         conn.close()
         
         # Format message for recipients
+        media_text = ""
+        if media_urls:
+            media_count = len(media_urls)
+            media_types = [media['type'].split('/')[0] for media in media_urls]
+            if 'image' in media_types:
+                media_text = f" 📸 [{media_count} photo(s)]"
+            elif 'audio' in media_types:
+                media_text = f" 🎵 [{media_count} audio file(s)]"
+            elif 'video' in media_types:
+                media_text = f" 🎥 [{media_count} video(s)]"
+            else:
+                media_text = f" 📎 [{media_count} file(s)]"
+        
         if message_type == 'reaction':
-            formatted_message = f"💭 {sender['name']} responded:\n{message_text}\n\n📱 Reply to join the conversation!"
+            formatted_message = f"💭 {sender['name']} responded:\n{message_text}{media_text}\n\n📱 Reply to join the conversation!"
         else:
-            formatted_message = f"💬 {sender['name']}:\n{message_text}\n\n📱 Reply to join the conversation!"
+            formatted_message = f"💬 {sender['name']}:\n{message_text}{media_text}\n\n📱 Reply to join the conversation!"
         
         # Send to ALL members across ALL groups
         sent_count = 0
         failed_count = 0
+        mms_sent = 0
+        sms_sent = 0
         group_breakdown = {}
         
         for recipient in all_recipients:
             # Get recipient's groups for tracking
             recipient_groups = self.get_member_groups(recipient['phone'])
+            recipient_supports_mms = self.supports_mms(recipient['phone'])
             
-            if self.send_sms(recipient['phone'], formatted_message):
+            try:
+                if media_urls and recipient_supports_mms:
+                    # Send MMS with media
+                    message_obj = self.client.messages.create(
+                        body=formatted_message,
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=recipient['phone'],
+                        media_url=[media['url'] for media in media_urls]
+                    )
+                    mms_sent += 1
+                    print(f"📱 MMS sent to {recipient['phone']}: {message_obj.sid}")
+                else:
+                    # Send SMS only (no media)
+                    message_obj = self.client.messages.create(
+                        body=formatted_message,
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=recipient['phone']
+                    )
+                    sms_sent += 1
+                    print(f"📱 SMS sent to {recipient['phone']}: {message_obj.sid}")
+                
                 sent_count += 1
+                
                 # Log delivery for each group they're in
                 for group in recipient_groups:
                     self.log_delivery(message_id, recipient['phone'], group['id'], 'sent')
                     group_breakdown[group['name']] = group_breakdown.get(group['name'], 0) + 1
-            else:
+                    
+            except Exception as e:
                 failed_count += 1
+                print(f"❌ Failed to send to {recipient['phone']}: {e}")
                 for group in recipient_groups:
                     self.log_delivery(message_id, recipient['phone'], group['id'], 'failed')
         
         # Create detailed confirmation
         confirmation = f"✅ Message broadcast to ALL GROUPS!\n"
         confirmation += f"📊 Total sent: {sent_count} members\n"
+        
+        if media_urls:
+            confirmation += f"📎 Media: {mms_sent} MMS, {sms_sent} SMS (text only)\n"
+        
         if group_breakdown:
             confirmation += "📋 Group breakdown:\n"
             for group_name, count in group_breakdown.items():
@@ -321,6 +392,10 @@ class MultiGroupBroadcastSMS:
         cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-7 days')")
         recent_messages = cursor.fetchone()[0]
         
+        # Media message count
+        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE has_media = 1 AND sent_at > datetime('now', '-7 days')")
+        recent_media = cursor.fetchone()[0]
+        
         conn.close()
         
         stats = f"📊 CONGREGATION STATISTICS\n\n"
@@ -329,16 +404,21 @@ class MultiGroupBroadcastSMS:
         for group_name, count in group_stats:
             stats += f"  • {group_name}: {count} members\n"
         stats += f"\n📈 Messages this week: {recent_messages}"
+        stats += f"\n📎 Media messages: {recent_media}"
         
         return stats
     
-    def handle_sms(self, from_phone, message_body):
-        """Main SMS handler for multi-group broadcasting"""
+    def handle_sms_with_media(self, from_phone, message_body, media_urls):
+        """Main SMS handler for multi-group broadcasting with media support"""
         from_phone = self.clean_phone_number(from_phone)
-        message_body = message_body.strip()
+        message_body = message_body.strip() if message_body else ""
         message_upper = message_body.upper()
         
         print(f"📨 Processing broadcast: {from_phone} -> {message_body}")
+        if media_urls:
+            print(f"📎 Media received: {len(media_urls)} files")
+            for media in media_urls:
+                print(f"   - {media['type']}: {media['url']}")
         
         # Ensure member exists (auto-add to Group 1 if new)
         member = self.get_member_info(from_phone)
@@ -349,7 +429,8 @@ class MultiGroupBroadcastSMS:
             help_text += "📢 HOW IT WORKS:\n"
             help_text += "• Text anything → Goes to ALL 3 congregation groups!\n"
             help_text += "• All reactions → Go to ALL groups\n"
-            help_text += "• Everyone sees everything across all groups\n\n"
+            help_text += "• Everyone sees everything across all groups\n"
+            help_text += "• Send photos/audio → MMS group gets media, others get text\n\n"
             help_text += "📱 COMMANDS:\n"
             help_text += "• HELP - Show this message\n"
             help_text += "• STATS - Show congregation statistics\n"
@@ -360,7 +441,8 @@ class MultiGroupBroadcastSMS:
                 help_text += "• ADD [phone] [name] TO [group_id] - Add member\n"
                 help_text += "• RECENT - View recent broadcasts\n"
             
-            help_text += "💬 Just type your message to broadcast to everyone!"
+            help_text += "💬 Just type your message to broadcast to everyone!\n"
+            help_text += "📸 Send photos/audio and they'll be shared with MMS-capable members!"
             return help_text
         
         # STATS command
@@ -377,6 +459,10 @@ class MultiGroupBroadcastSMS:
             for group in groups:
                 response += f"  • {group['name']}\n"
             response += f"\n💬 Your messages go to ALL congregation groups!"
+            
+            if self.supports_mms(from_phone):
+                response += f"\n📸 You can send photos/audio (MMS supported)!"
+            
             return response
         
         # ADMIN COMMANDS
@@ -402,7 +488,7 @@ class MultiGroupBroadcastSMS:
                 conn = sqlite3.connect('church_broadcast.db')
                 cursor = conn.cursor()
                 cursor.execute('''
-                    SELECT from_name, message_text, message_type, sent_at 
+                    SELECT from_name, message_text, message_type, has_media, media_count, sent_at 
                     FROM broadcast_messages 
                     ORDER BY sent_at DESC 
                     LIMIT 5
@@ -415,12 +501,13 @@ class MultiGroupBroadcastSMS:
                 
                 result = "📋 Recent Broadcasts:\n\n"
                 for msg in messages:
-                    result += f"👤 {msg[0]} ({msg[2]})\n💬 {msg[1][:50]}...\n🕐 {msg[3][:16]}\n\n"
+                    media_info = f" +{msg[4]} media" if msg[3] else ""
+                    result += f"👤 {msg[0]} ({msg[2]})\n💬 {msg[1][:50]}{media_info}...\n🕐 {msg[5][:16]}\n\n"
                 return result
         
-        # DEFAULT: Broadcast message to ALL groups
+        # DEFAULT: Broadcast message with media to ALL groups
         else:
-            return self.broadcast_to_all_groups(from_phone, message_body, 'broadcast')
+            return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
 
 # Initialize the system
 broadcast_sms = MultiGroupBroadcastSMS()
@@ -434,36 +521,48 @@ def setup_your_congregation():
     
     # GROUP 1 MEMBERS (SMS Group 1) - REPLACE WITH REAL NUMBERS
     print("📱 Adding Group 1 members...")
-    # broadcast_sms.add_member_to_group("+15408357329", 1, "barok")
     broadcast_sms.add_member_to_group("+12068001141", 1, "Mike")
-    # broadcast_sms.add_member_to_group("+1234567892", 1, "David Wilson")
     
     # GROUP 2 MEMBERS (SMS Group 2) - REPLACE WITH REAL NUMBERS  
     print("📱 Adding Group 2 members...")
     broadcast_sms.add_member_to_group("+14257729189", 2, "Sam g")
-    # broadcast_sms.add_member_to_group("+1234567894", 2, "Michael Brown")
-    # broadcast_sms.add_member_to_group("+1234567895", 2, "Lisa Garcia")
     
     # GROUP 3 MEMBERS (MMS Group) - REPLACE WITH REAL NUMBERS
     print("📱 Adding Group 3 members...")
     broadcast_sms.add_member_to_group("+12065910943", 3, "sami drum")
-    # broadcast_sms.add_member_to_group("+1234567897", 3, "Jennifer Wilson")
-    # broadcast_sms.add_member_to_group("+1234567898", 3, "Christopher Moore")
     
     print("✅ All 3 groups setup complete!")
     print("💬 Now when anyone texts, it goes to ALL groups!")
 
 @app.route('/webhook/sms', methods=['POST'])
 def handle_sms():
-    """Handle incoming SMS from Twilio"""
+    """Handle incoming SMS/MMS from Twilio - WITH MEDIA SUPPORT"""
     try:
         from_number = request.form.get('From', '').strip()
         message_body = request.form.get('Body', '').strip()
         
-        print(f"📱 Webhook: {from_number} -> {message_body}")
+        # Handle media (pictures, audio, video)
+        media_urls = []
+        num_media = int(request.form.get('NumMedia', 0))
         
-        if from_number and message_body:
-            response_message = broadcast_sms.handle_sms(from_number, message_body)
+        for i in range(num_media):
+            media_url = request.form.get(f'MediaUrl{i}')
+            media_type = request.form.get(f'MediaContentType{i}')
+            if media_url:
+                media_urls.append({
+                    'url': media_url,
+                    'type': media_type
+                })
+        
+        print(f"📱 Webhook: {from_number} -> {message_body}")
+        if media_urls:
+            print(f"📎 Media received: {len(media_urls)} files")
+            for media in media_urls:
+                print(f"   - {media['type']}: {media['url']}")
+        
+        if from_number:
+            # Process text + media
+            response_message = broadcast_sms.handle_sms_with_media(from_number, message_body, media_urls)
             
             resp = MessagingResponse()
             resp.message(response_message)
@@ -471,17 +570,18 @@ def handle_sms():
             print(f"📤 Response: {response_message}")
             return str(resp)
         else:
-            print("❌ Missing fields")
+            print("❌ Missing phone number")
             return "OK", 200
             
     except Exception as e:
         print(f"❌ Error: {e}")
         resp = MessagingResponse()
+        resp.message("Sorry, there was an error processing your message.")
         return str(resp)
 
 @app.route('/', methods=['GET'])
 def home():
-    return "🏛️ Multi-Group Broadcast SMS System is running!"
+    return "🏛️ Multi-Group Broadcast SMS System with MMS Support is running!"
 
 if __name__ == '__main__':
     print("🏛️ Starting Multi-Group Broadcast SMS System...")
@@ -489,9 +589,10 @@ if __name__ == '__main__':
     # Setup your congregation
     setup_your_congregation()
     
-    print("\n🚀 Church SMS System Running on Heroku!")
+    print("\n🚀 Church SMS System Running with MMS Support!")
+    print("📱 Text messages go to ALL groups!")
+    print("📸 Photos/audio go to MMS group + text description to others!")
     
-    # Use PORT environment variable for Heroku
-    import os
+    # Use PORT environment variable for Render
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False) 
+    app.run(host='0.0.0.0', port=port, debug=False)
