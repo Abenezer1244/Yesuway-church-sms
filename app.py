@@ -441,48 +441,49 @@ def broadcast_with_media(self, from_phone, message_text, media_urls, message_typ
             print(f"❌ Stats error: {e}")
             return "Error retrieving statistics"
     
-    def handle_sms_with_media(self, from_phone, message_body, media_urls):
-        """Main SMS handler with comprehensive logging"""
-        print(f"\n📨 ===== PROCESSING MESSAGE =====")
-        print(f"👤 From: {from_phone}")
-        print(f"📝 Body: '{message_body}'")
-        print(f"📎 Media count: {len(media_urls) if media_urls else 0}")
+def handle_sms_with_media(self, from_phone, message_body, media_urls):
+    """Main SMS handler with comprehensive logging"""
+    print(f"\n📨 ===== PROCESSING MESSAGE =====")
+    print(f"👤 From: {from_phone}")
+    print(f"📝 Body: '{message_body}'")
+    print(f"📎 Media count: {len(media_urls) if media_urls else 0}")
+    
+    try:
+        from_phone = self.clean_phone_number(from_phone)
+        message_body = message_body.strip() if message_body else ""
         
-        try:
-            from_phone = self.clean_phone_number(from_phone)
-            message_body = message_body.strip() if message_body else ""
-            
-            if media_urls:
-                for i, media in enumerate(media_urls):
-                    print(f"📎 Media {i+1}: {media.get('type', 'unknown')} - {media.get('url', 'no URL')[:100]}...")
-            
-            # Ensure member exists (auto-add to Group 1 if new)
-            member = self.get_member_info(from_phone)
-            print(f"👤 Sender: {member['name']} (Admin: {member['is_admin']})")
-            
-            # Check for admin commands first
-            if self.is_admin(from_phone) and message_body.upper().startswith(('STATS', 'HELP')):
-                print(f"🔧 Processing admin command: {message_body}")
-                if message_body.upper() == 'STATS':
-                    return self.get_congregation_stats()
-                elif message_body.upper() == 'HELP':
-                    return ("📋 ADMIN COMMANDS:\n"
-                           "• STATS - View congregation statistics\n"
-                           "• HELP - Show this help")
-            
-            # DEFAULT: Broadcast message with media to ALL groups
-            print(f"📡 Broadcasting to all groups...")
-            return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
-            
-        except Exception as processing_error:
-            print(f"❌ MESSAGE PROCESSING ERROR: {processing_error}")
-            print(f"🔍 Error type: {type(processing_error).__name__}")
-            traceback.print_exc()
-            return "Error processing your message - please try again"
+        if media_urls:
+            for i, media in enumerate(media_urls):
+                print(f"📎 Media {i+1}: {media.get('type', 'unknown')} - {media.get('url', 'no URL')[:100]}...")
         
-        finally:
-            print(f"🏁 ===== MESSAGE PROCESSING COMPLETED =====\n")
-
+        # Ensure member exists (auto-add to Group 1 if new)
+        member = self.get_member_info(from_phone)
+        print(f"👤 Sender: {member['name']} (Admin: {member['is_admin']})")
+        
+        # Check for admin commands first
+        if self.is_admin(from_phone) and message_body.upper().startswith(('STATS', 'HELP')):
+            print(f"🔧 Processing admin command: {message_body}")
+            if message_body.upper() == 'STATS':
+                return self.get_congregation_stats()
+            elif message_body.upper() == 'HELP':
+                return ("📋 ADMIN COMMANDS:\n"
+                       "• STATS - View congregation statistics\n"
+                       "• HELP - Show this help")
+        
+        # DEFAULT: Broadcast message with media to ALL groups
+        print(f"📡 Broadcasting to all groups...")
+        return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
+        
+    except Exception as processing_error:
+        print(f"❌ MESSAGE PROCESSING ERROR: {processing_error}")
+        print(f"🔍 Error type: {type(processing_error).__name__}")
+        import traceback
+        traceback.print_exc()
+        return "Error processing your message - please try again"
+    
+    finally:
+        print(f"🏁 ===== MESSAGE PROCESSING COMPLETED =====\n")
+        
 # Initialize the system
 print("🏛️ Initializing Church SMS System...")
 broadcast_sms = MultiGroupBroadcastSMS()
