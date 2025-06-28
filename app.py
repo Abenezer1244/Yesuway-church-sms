@@ -87,7 +87,7 @@ class MultiGroupBroadcastSMS:
             )
         ''')
         
-        # Delivery tracking - track delivery to all 3 groups
+        # Enhanced delivery tracking with error details
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS delivery_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +96,10 @@ class MultiGroupBroadcastSMS:
                 to_group_id INTEGER NOT NULL,
                 delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT 'sent',
+                twilio_sid TEXT NULL,
+                error_code TEXT NULL,
+                error_message TEXT NULL,
+                message_type TEXT DEFAULT 'sms',
                 FOREIGN KEY (message_id) REFERENCES broadcast_messages (id),
                 FOREIGN KEY (to_group_id) REFERENCES groups (id)
             )
@@ -227,17 +231,59 @@ class MultiGroupBroadcastSMS:
     
     def supports_mms(self, phone_number):
         """Check if a member can receive MMS - now everyone can!"""
-        # Since your Twilio number and campaign support MMS,
-        # and most modern phones support MMS, let's enable it for everyone
         return True
     
+    def validate_and_process_media_urls(self, media_urls):
+        """Validate and process media URLs from Twilio webhook"""
+        if not media_urls:
+            return []
+        
+        processed_media = []
+        print(f"🔍 Processing {len(media_urls)} media files...")
+        
+        for i, media in enumerate(media_urls):
+            media_url = media.get('url', '')
+            media_type = media.get('type', '')
+            
+            print(f"   Media {i+1}: {media_type} -> {media_url}")
+            
+            # Validate URL format
+            if media_url and media_url.startswith('http'):
+                # Check if it's a supported media type
+                supported_types = [
+                    'image/jpeg', 'image/jpg', 'image/png', 'image/gif',
+                    'video/mp4', 'video/mov', 'video/quicktime', 'video/3gpp',
+                    'audio/mp3', 'audio/mpeg', 'audio/wav', 'audio/amr'
+                ]
+                
+                if any(supported in media_type.lower() for supported in ['image/', 'video/', 'audio/']):
+                    processed_media.append({
+                        'url': media_url,
+                        'type': media_type
+                    })
+                    print(f"   ✅ Valid media: {media_type}")
+                else:
+                    print(f"   ⚠️ Unsupported media type: {media_type}")
+            else:
+                print(f"   ❌ Invalid URL: {media_url}")
+        
+        print(f"✅ Processed {len(processed_media)} valid media files")
+        return processed_media
+    
     def broadcast_with_media(self, from_phone, message_text, media_urls, message_type='broadcast'):
-        """Send message WITH media to EVERYONE across ALL 3 groups"""
+        """ENHANCED: Send message WITH media to EVERYONE across ALL 3 groups"""
+        print(f"\n📡 Starting broadcast from {from_phone}")
+        print(f"📝 Message: {message_text}")
+        print(f"📎 Media files: {len(media_urls) if media_urls else 0}")
+        
         sender = self.get_member_info(from_phone)
         all_recipients = self.get_all_members_across_groups(exclude_phone=from_phone)
         
         if not all_recipients:
             return "No congregation members found to send to."
+        
+        # Process and validate media URLs
+        valid_media = self.validate_and_process_media_urls(media_urls)
         
         # Store the broadcast message
         conn = sqlite3.connect('church_broadcast.db')
@@ -245,11 +291,11 @@ class MultiGroupBroadcastSMS:
         cursor.execute('''
             INSERT INTO broadcast_messages (from_phone, from_name, message_text, message_type, has_media, media_count) 
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (from_phone, sender['name'], message_text, message_type, bool(media_urls), len(media_urls)))
+        ''', (from_phone, sender['name'], message_text, message_type, bool(valid_media), len(valid_media)))
         message_id = cursor.lastrowid
         
         # Store media URLs
-        for media in media_urls:
+        for media in valid_media:
             cursor.execute('''
                 INSERT INTO message_media (message_id, media_url, media_type) 
                 VALUES (?, ?, ?)
@@ -260,87 +306,147 @@ class MultiGroupBroadcastSMS:
         
         # Format message for recipients
         media_text = ""
-        if media_urls:
-            media_count = len(media_urls)
-            media_types = [media['type'].split('/')[0] for media in media_urls]
+        if valid_media:
+            media_count = len(valid_media)
+            media_types = [media['type'].split('/')[0] for media in valid_media]
             if 'image' in media_types:
-                media_text = f" 📸 [{media_count} photo(s)]"
+                media_text = f" 📸"
             elif 'audio' in media_types:
-                media_text = f" 🎵 [{media_count} audio file(s)]"
+                media_text = f" 🎵"
             elif 'video' in media_types:
-                media_text = f" 🎥 [{media_count} video(s)]"
+                media_text = f" 🎥"
             else:
-                media_text = f" 📎 [{media_count} file(s)]"
+                media_text = f" 📎"
         
         if message_type == 'reaction':
-            formatted_message = f"💭 {sender['name']} responded:\n{message_text}{media_text}"
+            formatted_message = f"💭 {sender['name']} responded:\n{message_text}"
         else:
-            formatted_message = f"💬 {sender['name']}:\n{message_text}{media_text}"
+            formatted_message = f"💬 {sender['name']}:{media_text}\n{message_text}"
         
-        # Send to ALL members across ALL groups
+        # Send to ALL members across ALL groups with improved error handling
         sent_count = 0
         failed_count = 0
-        mms_sent = 0
-        sms_sent = 0
-        group_breakdown = {}
+        mms_success = 0
+        mms_failed = 0
+        sms_fallback = 0
         
-        for recipient in all_recipients:
-            # Get recipient's groups for tracking
+        print(f"📤 Broadcasting to {len(all_recipients)} recipients...")
+        
+        for i, recipient in enumerate(all_recipients):
             recipient_groups = self.get_member_groups(recipient['phone'])
-            recipient_supports_mms = self.supports_mms(recipient['phone'])
+            print(f"📱 Sending to {recipient['name']} ({recipient['phone']}) - {i+1}/{len(all_recipients)}")
             
             try:
-                if media_urls:
-                    # Send MMS with media to everyone
-                    message_obj = self.client.messages.create(
-                        body=formatted_message,
-                        from_=TWILIO_PHONE_NUMBER,
-                        to=recipient['phone'],
-                        media_url=[media['url'] for media in media_urls]
-                    )
-                    mms_sent += 1
-                    print(f"📱 MMS sent to {recipient['phone']}: {message_obj.sid}")
+                if valid_media:
+                    # Try MMS with media first
+                    print(f"   📸 Attempting MMS with {len(valid_media)} media files...")
+                    try:
+                        # Extract just the URLs for Twilio API
+                        media_urls_only = [media['url'] for media in valid_media]
+                        
+                        message_obj = self.client.messages.create(
+                            body=formatted_message,
+                            from_=TWILIO_PHONE_NUMBER,
+                            to=recipient['phone'],
+                            media_url=media_urls_only
+                        )
+                        mms_success += 1
+                        print(f"   ✅ MMS sent successfully: {message_obj.sid}")
+                        
+                        # Log successful MMS delivery
+                        for group in recipient_groups:
+                            self.log_delivery(message_id, recipient['phone'], group['id'], 'sent', message_obj.sid, None, None, 'mms')
+                            
+                    except Exception as mms_error:
+                        print(f"   ❌ MMS failed: {str(mms_error)}")
+                        mms_failed += 1
+                        
+                        # Extract error details
+                        error_code = getattr(mms_error, 'code', None)
+                        error_msg = str(mms_error)
+                        
+                        # Log MMS failure
+                        for group in recipient_groups:
+                            self.log_delivery(message_id, recipient['phone'], group['id'], 'failed', None, error_code, error_msg, 'mms')
+                        
+                        # Fallback to SMS with media description
+                        print(f"   📱 Trying SMS fallback...")
+                        try:
+                            fallback_message = f"{formatted_message}\n\n📎 Media files were attached but couldn't be delivered to your device."
+                            
+                            sms_obj = self.client.messages.create(
+                                body=fallback_message,
+                                from_=TWILIO_PHONE_NUMBER,
+                                to=recipient['phone']
+                            )
+                            sms_fallback += 1
+                            print(f"   ✅ SMS fallback sent: {sms_obj.sid}")
+                            
+                            # Log SMS fallback success
+                            for group in recipient_groups:
+                                self.log_delivery(message_id, recipient['phone'], group['id'], 'sent_fallback', sms_obj.sid, None, None, 'sms')
+                            
+                        except Exception as sms_error:
+                            print(f"   ❌ SMS fallback also failed: {str(sms_error)}")
+                            failed_count += 1
+                            
+                            # Log complete failure
+                            for group in recipient_groups:
+                                self.log_delivery(message_id, recipient['phone'], group['id'], 'failed', None, getattr(sms_error, 'code', None), str(sms_error), 'sms')
+                            continue
                 else:
                     # Send SMS only (no media)
+                    print(f"   📱 Sending SMS...")
                     message_obj = self.client.messages.create(
                         body=formatted_message,
                         from_=TWILIO_PHONE_NUMBER,
                         to=recipient['phone']
                     )
-                    sms_sent += 1
-                    print(f"📱 SMS sent to {recipient['phone']}: {message_obj.sid}")
-                
+                    print(f"   ✅ SMS sent: {message_obj.sid}")
+                    
+                    # Log SMS delivery
+                    for group in recipient_groups:
+                        self.log_delivery(message_id, recipient['phone'], group['id'], 'sent', message_obj.sid, None, None, 'sms')
+
                 sent_count += 1
                 
-                # Log delivery for each group they're in
-                for group in recipient_groups:
-                    self.log_delivery(message_id, recipient['phone'], group['id'], 'sent')
-                    group_breakdown[group['name']] = group_breakdown.get(group['name'], 0) + 1
-                    
             except Exception as e:
                 failed_count += 1
-                print(f"❌ Failed to send to {recipient['phone']}: {e}")
+                print(f"   ❌ Complete failure for {recipient['phone']}: {e}")
                 for group in recipient_groups:
-                    self.log_delivery(message_id, recipient['phone'], group['id'], 'failed')
+                    self.log_delivery(message_id, recipient['phone'], group['id'], 'failed', None, getattr(e, 'code', None), str(e), 'unknown')
         
-        # Create simple confirmation (only for admin)
+        # Enhanced admin confirmation with detailed stats
+        print(f"\n📊 Broadcast Summary:")
+        print(f"   ✅ Successful: {sent_count}")
+        print(f"   📸 MMS Success: {mms_success}")
+        print(f"   📱 SMS Fallback: {sms_fallback}")
+        print(f"   ❌ MMS Failed: {mms_failed}")
+        print(f"   ❌ Total Failed: {failed_count}")
+        
         if self.is_admin(from_phone):
-            confirmation = f"✅ Sent to {sent_count} members"
+            confirmation = f"✅ Broadcast complete: {sent_count}/{len(all_recipients)} delivered"
+            if valid_media:
+                confirmation += f"\n📸 MMS: {mms_success} success"
+                if mms_failed > 0:
+                    confirmation += f", {mms_failed} failed"
+                if sms_fallback > 0:
+                    confirmation += f"\n📱 SMS fallback: {sms_fallback}"
             if failed_count > 0:
-                confirmation += f" ({failed_count} failed)"
+                confirmation += f"\n❌ Failed: {failed_count}"
             return confirmation
         else:
             # For regular members, no confirmation message
             return None
     
-    def log_delivery(self, message_id, to_phone, to_group_id, status):
-        """Log message delivery per group"""
+    def log_delivery(self, message_id, to_phone, to_group_id, status, twilio_sid=None, error_code=None, error_message=None, message_type='sms'):
+        """Enhanced delivery logging with error details"""
         conn = sqlite3.connect('church_broadcast.db')
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO delivery_log (message_id, to_phone, to_group_id, status) 
-            VALUES (?, ?, ?, ?)
-        ''', (message_id, to_phone, to_group_id, status))
+            INSERT INTO delivery_log (message_id, to_phone, to_group_id, status, twilio_sid, error_code, error_message, message_type) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (message_id, to_phone, to_group_id, status, twilio_sid, error_code, error_message, message_type))
         conn.commit()
         conn.close()
     
@@ -389,6 +495,16 @@ class MultiGroupBroadcastSMS:
         cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE has_media = 1 AND sent_at > datetime('now', '-7 days')")
         recent_media = cursor.fetchone()[0]
         
+        # MMS success rate
+        cursor.execute('''
+            SELECT 
+                COUNT(CASE WHEN message_type = 'mms' AND status = 'sent' THEN 1 END) as mms_success,
+                COUNT(CASE WHEN message_type = 'mms' THEN 1 END) as mms_total
+            FROM delivery_log 
+            WHERE delivered_at > datetime('now', '-7 days')
+        ''')
+        mms_stats = cursor.fetchone()
+        
         conn.close()
         
         stats = f"📊 CONGREGATION STATISTICS\n\n"
@@ -399,24 +515,100 @@ class MultiGroupBroadcastSMS:
         stats += f"\n📈 Messages this week: {recent_messages}"
         stats += f"\n📎 Media messages: {recent_media}"
         
+        if mms_stats and mms_stats[1] > 0:
+            mms_success_rate = (mms_stats[0] / mms_stats[1]) * 100
+            stats += f"\n📸 MMS success rate: {mms_success_rate:.1f}%"
+        
         return stats
     
     def handle_sms_with_media(self, from_phone, message_body, media_urls):
-        """Main SMS handler for multi-group broadcasting with media support"""
+        """ENHANCED: Main SMS handler for multi-group broadcasting with media support"""
         from_phone = self.clean_phone_number(from_phone)
         message_body = message_body.strip() if message_body else ""
         
-        print(f"📨 Processing broadcast: {from_phone} -> {message_body}")
+        print(f"\n📨 Processing message from {from_phone}")
+        print(f"📝 Body: '{message_body}'")
+        print(f"📎 Media count: {len(media_urls) if media_urls else 0}")
+        
         if media_urls:
-            print(f"📎 Media received: {len(media_urls)} files")
-            for media in media_urls:
-                print(f"   - {media['type']}: {media['url']}")
+            for i, media in enumerate(media_urls):
+                print(f"   Media {i+1}: {media.get('type', 'unknown')} - {media.get('url', 'no URL')[:50]}...")
         
         # Ensure member exists (auto-add to Group 1 if new)
         member = self.get_member_info(from_phone)
+        print(f"👤 Sender: {member['name']} (Admin: {member['is_admin']})")
+        
+        # Check for admin commands first
+        if self.is_admin(from_phone) and message_body.upper().startswith(('ADD ', 'STATS', 'RECENT', 'HELP')):
+            return self.handle_admin_commands(from_phone, message_body)
         
         # DEFAULT: Broadcast message with media to ALL groups
         return self.broadcast_with_media(from_phone, message_body, media_urls, 'broadcast')
+    
+    def handle_admin_commands(self, from_phone, message_body):
+        """Handle admin-only commands"""
+        command = message_body.upper().strip()
+        
+        if command == 'STATS':
+            return self.get_congregation_stats()
+        elif command == 'HELP':
+            return ("📋 ADMIN COMMANDS:\n"
+                   "• STATS - View congregation statistics\n"
+                   "• ADD +1234567890 Name TO 1 - Add member to group\n"
+                   "• RECENT - View recent broadcasts\n"
+                   "• HELP - Show this help")
+        elif command == 'RECENT':
+            return self.get_recent_broadcasts()
+        elif command.startswith('ADD '):
+            return self.handle_add_member_command(message_body)
+        else:
+            return None
+    
+    def get_recent_broadcasts(self):
+        """Get recent broadcast messages for admin"""
+        conn = sqlite3.connect('church_broadcast.db')
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT from_name, message_text, has_media, sent_at 
+            FROM broadcast_messages 
+            ORDER BY sent_at DESC 
+            LIMIT 5
+        ''')
+        recent = cursor.fetchall()
+        conn.close()
+        
+        if not recent:
+            return "No recent broadcasts found."
+        
+        result = "📋 RECENT BROADCASTS:\n\n"
+        for i, (name, text, has_media, sent_at) in enumerate(recent, 1):
+            media_icon = " 📎" if has_media else ""
+            # Truncate long messages
+            display_text = text[:50] + "..." if len(text) > 50 else text
+            result += f"{i}. {name}{media_icon}: {display_text}\n"
+        
+        return result
+    
+    def handle_add_member_command(self, message_body):
+        """Handle ADD member command"""
+        # Parse: ADD +1234567890 John Smith TO 1
+        try:
+            parts = message_body.split()
+            if len(parts) < 5 or parts[0].upper() != 'ADD' or parts[-2].upper() != 'TO':
+                return "❌ Format: ADD +1234567890 First Last TO 1"
+            
+            phone = parts[1]
+            group_id = int(parts[-1])
+            name = ' '.join(parts[2:-2])
+            
+            if group_id not in [1, 2, 3]:
+                return "❌ Group must be 1, 2, or 3"
+            
+            self.add_member_to_group(phone, group_id, name)
+            return f"✅ Added {name} to Group {group_id}"
+            
+        except Exception as e:
+            return f"❌ Error adding member: {str(e)}"
 
 # Initialize the system
 broadcast_sms = MultiGroupBroadcastSMS()
@@ -446,67 +638,97 @@ def setup_your_congregation():
 
 @app.route('/webhook/sms', methods=['POST'])
 def handle_sms():
-    """Handle incoming SMS/MMS from Twilio - WITH MEDIA SUPPORT"""
+    """ENHANCED: Handle incoming SMS/MMS from Twilio - WITH PROPER MEDIA SUPPORT"""
     try:
         from_number = request.form.get('From', '').strip()
         message_body = request.form.get('Body', '').strip()
         
-        # Handle media (pictures, audio, video)
+        # Enhanced media handling
         media_urls = []
         num_media = int(request.form.get('NumMedia', 0))
+        
+        print(f"\n🌐 Webhook received from {from_number}")
+        print(f"📝 Body: '{message_body}'")
+        print(f"📎 NumMedia: {num_media}")
         
         for i in range(num_media):
             media_url = request.form.get(f'MediaUrl{i}')
             media_type = request.form.get(f'MediaContentType{i}')
+            
             if media_url:
                 media_urls.append({
                     'url': media_url,
-                    'type': media_type
+                    'type': media_type or 'unknown'
                 })
-        
-        print(f"📱 Webhook: {from_number} -> {message_body}")
-        if media_urls:
-            print(f"📎 Media received: {len(media_urls)} files")
-            for media in media_urls:
-                print(f"   - {media['type']}: {media['url']}")
+                print(f"📎 Media {i+1}: {media_type} -> {media_url}")
         
         if from_number:
-            # Process text + media
-            response_message = broadcast_sms.handle_sms_with_media(from_number, message_body, media_urls)
-            
-            # Only send response if there's a message (admin confirmations or help commands)
-            if response_message:
+            # Process text + media with enhanced error handling
+            try:
+                response_message = broadcast_sms.handle_sms_with_media(from_number, message_body, media_urls)
+                
+                # Only send response if there's a message (admin confirmations or help commands)
+                if response_message:
+                    resp = MessagingResponse()
+                    resp.message(response_message)
+                    print(f"📤 Sending response: {response_message[:100]}...")
+                    return str(resp)
+                else:
+                    # No response needed (regular member message was broadcast)
+                    print(f"📤 Message broadcast complete, no response sent")
+                    return "OK", 200
+                    
+            except Exception as processing_error:
+                print(f"❌ Error processing message: {processing_error}")
                 resp = MessagingResponse()
-                resp.message(response_message)
-                print(f"📤 Response: {response_message}")
+                resp.message("Sorry, there was an error processing your message. Please try again.")
                 return str(resp)
-            else:
-                # No response needed (regular member message was broadcast)
-                print(f"📤 Message processed, no response sent")
-                return "OK", 200
         else:
-            print("❌ Missing phone number")
+            print("❌ Missing sender phone number")
             return "OK", 200
             
     except Exception as e:
-        print(f"❌ Error: {e}")
-        resp = MessagingResponse()
-        resp.message("Sorry, there was an error processing your message.")
-        return str(resp)
+        print(f"❌ Webhook error: {e}")
+        # Return OK to prevent Twilio retries on our errors
+        return "OK", 200
+
+@app.route('/webhook/status', methods=['POST'])
+def handle_status_callback():
+    """Handle delivery status callbacks from Twilio for debugging"""
+    try:
+        message_sid = request.form.get('MessageSid')
+        message_status = request.form.get('MessageStatus')
+        to_number = request.form.get('To')
+        error_code = request.form.get('ErrorCode')
+        error_message = request.form.get('ErrorMessage')
+        
+        print(f"📊 Status Update for {message_sid}:")
+        print(f"   To: {to_number}")
+        print(f"   Status: {message_status}")
+        
+        if error_code:
+            print(f"   ❌ Error {error_code}: {error_message}")
+        
+        return "OK", 200
+        
+    except Exception as e:
+        print(f"❌ Status callback error: {e}")
+        return "OK", 200
 
 @app.route('/', methods=['GET'])
 def home():
-    return "🏛️ Multi-Group Broadcast SMS System with MMS Support is running!"
+    return "🏛️ Multi-Group Broadcast SMS System with ENHANCED MMS Support is running!"
 
 if __name__ == '__main__':
-    print("🏛️ Starting Multi-Group Broadcast SMS System...")
+    print("🏛️ Starting Enhanced Multi-Group Broadcast SMS System...")
     
     # Setup your congregation
     setup_your_congregation()
     
-    print("\n🚀 Church SMS System Running with MMS Support!")
-    print("📱 Text messages go to ALL groups!")
-    print("📸 Photos/audio go to MMS group + text description to others!")
+    print("\n🚀 Church SMS System Running with ENHANCED MMS Support!")
+    print("📱 All messages broadcast to entire congregation!")
+    print("📸 MMS with automatic SMS fallback for failed deliveries!")
+    print("📊 Detailed logging and error tracking enabled!")
     
     # Use PORT environment variable for Render
     port = int(os.environ.get('PORT', 5000))
