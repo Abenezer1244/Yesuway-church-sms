@@ -226,10 +226,10 @@ class MultiGroupBroadcastSMS:
             return {"name": name, "is_admin": False}
     
     def supports_mms(self, phone_number):
-        """Check if a member's groups support MMS"""
-        groups = self.get_member_groups(phone_number)
-        # Group 3 is the MMS group, others are SMS only
-        return any(group['id'] == 3 for group in groups)
+        """Check if a member can receive MMS - now everyone can!"""
+        # Since your Twilio number and campaign support MMS,
+        # and most modern phones support MMS, let's enable it for everyone
+        return True
     
     def broadcast_with_media(self, from_phone, message_text, media_urls, message_type='broadcast'):
         """Send message WITH media to EVERYONE across ALL 3 groups"""
@@ -290,8 +290,8 @@ class MultiGroupBroadcastSMS:
             recipient_supports_mms = self.supports_mms(recipient['phone'])
             
             try:
-                if media_urls and recipient_supports_mms:
-                    # Send MMS with media
+                if media_urls:
+                    # Send MMS with media to everyone
                     message_obj = self.client.messages.create(
                         body=formatted_message,
                         from_=TWILIO_PHONE_NUMBER,
@@ -328,7 +328,7 @@ class MultiGroupBroadcastSMS:
         confirmation += f"📊 Total sent: {sent_count} members\n"
         
         if media_urls:
-            confirmation += f"📎 Media: {mms_sent} MMS, {sms_sent} SMS (text only)\n"
+            confirmation += f"📎 Media: {sent_count} MMS sent to all members\n"
         
         if group_breakdown:
             confirmation += "📋 Group breakdown:\n"
