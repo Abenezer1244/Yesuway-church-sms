@@ -263,206 +263,126 @@ class MultiGroupBroadcastSMS:
         """Check if a member can receive MMS"""
         return True
     
-    def broadcast_with_media(self, from_phone, message_text, media_urls, message_type='broadcast'):
-        """Enhanced broadcast with comprehensive error handling and logging"""
-        print(f"\n📡 ===== STARTING BROADCAST =====")
-        print(f"👤 From: {from_phone}")
-        print(f"📝 Message: '{message_text}'")
-        print(f"📎 Media count: {len(media_urls) if media_urls else 0}")
-        print(f"🏷️ Message type: {message_type}")
+def broadcast_with_media(self, from_phone, message_text, media_urls, message_type='broadcast'):
+    """Crash-resistant broadcast with comprehensive error handling"""
+    print(f"\n📡 ===== STARTING BROADCAST =====")
+    print(f"👤 From: {from_phone}")
+    print(f"📝 Message: '{message_text}'")
+    print(f"📎 Media count: {len(media_urls) if media_urls else 0}")
+    
+    try:
+        sender = self.get_member_info(from_phone)
+        print(f"👤 Sender info: {sender}")
         
-        try:
-            sender = self.get_member_info(from_phone)
-            print(f"👤 Sender info: {sender}")
-            
-            all_recipients = self.get_all_members_across_groups(exclude_phone=from_phone)
-            print(f"📮 Recipients found: {len(all_recipients)}")
-            
-            if not all_recipients:
-                print("❌ No recipients found - returning error message")
-                return "No congregation members found to send to."
-            
-            # Validate and process media URLs
-            valid_media_urls = []
-            if media_urls:
-                print(f"🔍 Validating {len(media_urls)} media files...")
-                for i, media in enumerate(media_urls):
-                    media_url = media.get('url', '')
-                    media_type = media.get('type', '')
-                    print(f"   Media {i+1}: {media_type} -> {media_url[:100]}...")
-                    
-                    if media_url and media_url.startswith('http'):
-                        valid_media_urls.append(media_url)
-                        print(f"   ✅ Valid media URL")
-                    else:
-                        print(f"   ❌ Invalid media URL")
-                print(f"✅ {len(valid_media_urls)} valid media URLs found")
-            
-            # Store the broadcast message in database
-            try:
-                conn = sqlite3.connect('church_broadcast.db')
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO broadcast_messages (from_phone, from_name, message_text, message_type, has_media, media_count) 
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (from_phone, sender['name'], message_text, message_type, bool(valid_media_urls), len(valid_media_urls)))
-                message_id = cursor.lastrowid
+        all_recipients = self.get_all_members_across_groups(exclude_phone=from_phone)
+        print(f"📮 Recipients found: {len(all_recipients)}")
+        
+        if not all_recipients:
+            return "No congregation members found to send to."
+        
+        # Validate media URLs
+        valid_media_urls = []
+        if media_urls:
+            print(f"🔍 Validating {len(media_urls)} media files...")
+            for i, media in enumerate(media_urls):
+                media_url = media.get('url', '')
+                print(f"   Media {i+1}: {media.get('type', 'unknown')} -> {media_url[:100]}...")
                 
-                # Store media URLs
-                for media in media_urls:
-                    cursor.execute('''
-                        INSERT INTO message_media (message_id, media_url, media_type) 
-                        VALUES (?, ?, ?)
-                    ''', (message_id, media['url'], media['type']))
-                
-                conn.commit()
-                conn.close()
-                print(f"💾 Stored broadcast message with ID: {message_id}")
-            except Exception as db_error:
-                print(f"❌ Database storage error: {db_error}")
-                message_id = None
-            
-            # Format message for recipients
-            media_icon = ""
-            if valid_media_urls:
-                if any('image' in media.get('type', '') for media in media_urls):
-                    media_icon = " 📸"
-                elif any('audio' in media.get('type', '') for media in media_urls):
-                    media_icon = " 🎵"
-                elif any('video' in media.get('type', '') for media in media_urls):
-                    media_icon = " 🎥"
+                if media_url and media_url.startswith('http'):
+                    valid_media_urls.append(media_url)
+                    print(f"   ✅ Valid media URL")
                 else:
-                    media_icon = " 📎"
+                    print(f"   ❌ Invalid media URL")
+            print(f"✅ {len(valid_media_urls)} valid media URLs found")
+        
+        # Format message
+        formatted_message = f"💬 {sender['name']}:\n{message_text}"
+        if valid_media_urls:
+            formatted_message = f"💬 {sender['name']} 📸:\n{message_text}"
+        
+        print(f"📝 Formatted message: {formatted_message}")
+        
+        # Send to recipients with individual error handling
+        sent_count = 0
+        failed_count = 0
+        
+        print(f"📤 Starting delivery to {len(all_recipients)} recipients...")
+        
+        for i, recipient in enumerate(all_recipients):
+            print(f"\n📱 Processing recipient {i+1}/{len(all_recipients)}: {recipient['name']} ({recipient['phone']})")
             
-            formatted_message = f"💬 {sender['name']}:{media_icon}\n{message_text}"
-            print(f"📝 Formatted message: {formatted_message}")
-            
-            # Send to ALL members with individual error handling
-            sent_count = 0
-            failed_count = 0
-            mms_success = 0
-            sms_fallback = 0
-            
-            print(f"📤 Starting delivery to {len(all_recipients)} recipients...")
-            
-            for i, recipient in enumerate(all_recipients):
-                print(f"\n📱 Processing recipient {i+1}/{len(all_recipients)}: {recipient['name']} ({recipient['phone']})")
-                recipient_groups = self.get_member_groups(recipient['phone'])
+            try:
+                print(f"🔄 Attempting to send...")
                 
-                try:
-                    if valid_media_urls:
-                        # Try MMS first
-                        print(f"📸 Attempting MMS with {len(valid_media_urls)} media files...")
-                        try:
-                            if not self.client:
-                                print("❌ No Twilio client available")
-                                raise Exception("No Twilio client")
-                            
-                            message_obj = self.client.messages.create(
-                                body=formatted_message,
-                                from_=TWILIO_PHONE_NUMBER,
-                                to=recipient['phone'],
-                                media_url=valid_media_urls
-                            )
-                            mms_success += 1
-                            print(f"✅ MMS sent successfully: {message_obj.sid}")
-                            
-                            # Log successful delivery
-                            if message_id:
-                                for group in recipient_groups:
-                                    self.log_delivery(message_id, recipient['phone'], group['id'], 'sent', message_obj.sid, None, None, 'mms')
-                            
-                        except Exception as mms_error:
-                            print(f"❌ MMS failed: {str(mms_error)}")
-                            
-                            # Try SMS fallback
-                            print(f"📱 Attempting SMS fallback...")
-                            try:
-                                fallback_message = f"{formatted_message}\n\n📎 Media files were attached but couldn't be delivered to your device."
-                                
-                                sms_obj = self.client.messages.create(
-                                    body=fallback_message,
-                                    from_=TWILIO_PHONE_NUMBER,
-                                    to=recipient['phone']
-                                )
-                                sms_fallback += 1
-                                print(f"✅ SMS fallback sent: {sms_obj.sid}")
-                                
-                                # Log fallback delivery
-                                if message_id:
-                                    for group in recipient_groups:
-                                        self.log_delivery(message_id, recipient['phone'], group['id'], 'sent_fallback', sms_obj.sid, getattr(mms_error, 'code', None), str(mms_error), 'sms')
-                                
-                            except Exception as sms_error:
-                                print(f"❌ SMS fallback also failed: {str(sms_error)}")
-                                failed_count += 1
-                                
-                                # Log complete failure
-                                if message_id:
-                                    for group in recipient_groups:
-                                        self.log_delivery(message_id, recipient['phone'], group['id'], 'failed', None, getattr(sms_error, 'code', None), str(sms_error), 'sms')
-                                continue
-                    else:
-                        # Send SMS only (no media)
-                        print(f"📱 Sending SMS (no media)...")
+                if valid_media_urls:
+                    print(f"📸 Trying MMS with {len(valid_media_urls)} media files...")
+                    try:
+                        # CRITICAL: Add timeout and error handling
                         if not self.client:
-                            print("❌ No Twilio client available")
-                            raise Exception("No Twilio client")
+                            raise Exception("No Twilio client available")
                         
+                        print(f"🔗 Twilio client available, creating message...")
                         message_obj = self.client.messages.create(
                             body=formatted_message,
                             from_=TWILIO_PHONE_NUMBER,
-                            to=recipient['phone']
+                            to=recipient['phone'],
+                            media_url=valid_media_urls
                         )
-                        print(f"✅ SMS sent: {message_obj.sid}")
+                        print(f"✅ MMS sent successfully: {message_obj.sid}")
+                        sent_count += 1
                         
-                        # Log SMS delivery
-                        if message_id:
-                            for group in recipient_groups:
-                                self.log_delivery(message_id, recipient['phone'], group['id'], 'sent', message_obj.sid, None, None, 'sms')
-                    
+                    except Exception as mms_error:
+                        print(f"❌ MMS failed for {recipient['phone']}: {str(mms_error)}")
+                        print(f"🔧 Trying SMS fallback...")
+                        
+                        try:
+                            fallback_message = f"{formatted_message}\n\n📎 Photo was attached but couldn't be delivered."
+                            sms_obj = self.client.messages.create(
+                                body=fallback_message,
+                                from_=TWILIO_PHONE_NUMBER,
+                                to=recipient['phone']
+                            )
+                            print(f"✅ SMS fallback sent: {sms_obj.sid}")
+                            sent_count += 1
+                            
+                        except Exception as sms_error:
+                            print(f"❌ SMS fallback also failed: {str(sms_error)}")
+                            failed_count += 1
+                else:
+                    print(f"📱 Sending SMS only...")
+                    message_obj = self.client.messages.create(
+                        body=formatted_message,
+                        from_=TWILIO_PHONE_NUMBER,
+                        to=recipient['phone']
+                    )
+                    print(f"✅ SMS sent: {message_obj.sid}")
                     sent_count += 1
                     
-                except Exception as send_error:
-                    failed_count += 1
-                    print(f"❌ Failed to send to {recipient['phone']}: {send_error}")
-                    print(f"🔍 Error type: {type(send_error).__name__}")
-                    
-                    # Log failure
-                    if message_id:
-                        for group in recipient_groups:
-                            self.log_delivery(message_id, recipient['phone'], group['id'], 'failed', None, getattr(send_error, 'code', None), str(send_error), 'unknown')
-            
-            # Summary
-            print(f"\n📊 ===== BROADCAST SUMMARY =====")
-            print(f"✅ Total sent: {sent_count}")
-            print(f"📸 MMS success: {mms_success}")
-            print(f"📱 SMS fallback: {sms_fallback}")
-            print(f"❌ Failed: {failed_count}")
-            print(f"📋 Total recipients: {len(all_recipients)}")
-            
-            # Return admin confirmation
-            if self.is_admin(from_phone):
-                confirmation = f"✅ Broadcast complete: {sent_count}/{len(all_recipients)} delivered"
-                if valid_media_urls:
-                    confirmation += f"\n📸 MMS: {mms_success} success"
-                    if sms_fallback > 0:
-                        confirmation += f"\n📱 SMS fallback: {sms_fallback}"
-                if failed_count > 0:
-                    confirmation += f"\n❌ Failed: {failed_count}"
-                return confirmation
-            else:
-                # For regular members, no confirmation message
-                return None
-                
-        except Exception as broadcast_error:
-            print(f"❌ CRITICAL BROADCAST ERROR: {broadcast_error}")
-            print(f"🔍 Error type: {type(broadcast_error).__name__}")
-            traceback.print_exc()
-            return "Error processing broadcast - please try again"
+            except Exception as recipient_error:
+                print(f"❌ Complete failure for {recipient['phone']}: {str(recipient_error)}")
+                failed_count += 1
+                import traceback
+                traceback.print_exc()
         
-        finally:
-            print(f"🏁 ===== BROADCAST COMPLETED =====\n")
+        print(f"\n📊 ===== BROADCAST SUMMARY =====")
+        print(f"✅ Total sent: {sent_count}")
+        print(f"❌ Failed: {failed_count}")
+        print(f"📋 Total recipients: {len(all_recipients)}")
+        
+        # Return admin confirmation
+        if self.is_admin(from_phone):
+            return f"✅ Broadcast: {sent_count} sent, {failed_count} failed"
+        else:
+            return None
+            
+    except Exception as broadcast_error:
+        print(f"❌ CRITICAL BROADCAST ERROR: {broadcast_error}")
+        import traceback
+        traceback.print_exc()
+        return "Error sending message"
+    
+    finally:
+        print(f"🏁 ===== BROADCAST COMPLETED =====\n")
     
     def log_delivery(self, message_id, to_phone, to_group_id, status, twilio_sid=None, error_code=None, error_message=None, message_type='sms'):
         """Enhanced delivery logging with error details"""
