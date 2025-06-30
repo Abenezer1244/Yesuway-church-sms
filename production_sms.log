@@ -1,0 +1,39 @@
+2025-06-30 15:52:27,925 - __main__ - INFO - STARTING: Initializing Production Church SMS System with Smart Reaction Tracking...
+2025-06-30 15:52:27,925 - __main__ - WARNING - DEVELOPMENT MODE: Twilio client disabled - using mock responses
+2025-06-30 15:52:27,926 - __main__ - WARNING - DEVELOPMENT MODE: R2 client disabled - using local storage
+2025-06-30 15:52:27,956 - __main__ - INFO - ✅ Production groups initialized
+2025-06-30 15:52:27,973 - __main__ - INFO - ✅ Production database with smart reaction tracking initialized
+2025-06-30 15:52:27,976 - __main__ - INFO - ✅ Smart reaction scheduler started - Daily summaries at 8 PM
+2025-06-30 15:52:27,977 - __main__ - INFO - SUCCESS: Production Church SMS System with Smart Reaction Tracking initialized
+2025-06-30 15:52:27,978 - __main__ - INFO - SUCCESS: Production system with smart reaction tracking fully operational
+2025-06-30 15:52:27,980 - __main__ - INFO - STARTING: Production Church SMS System with Smart Reaction Tracking...
+2025-06-30 15:52:27,980 - __main__ - INFO - INFO: Professional church communication platform
+2025-06-30 15:52:27,981 - __main__ - INFO - INFO: Clean media presentation enabled
+2025-06-30 15:52:27,981 - __main__ - INFO - INFO: Manual registration only - secure access
+2025-06-30 15:52:27,981 - __main__ - INFO - INFO: Smart reaction tracking - silent with summaries
+2025-06-30 15:52:27,981 - __main__ - INFO - INFO: Daily summaries at 8:00 PM
+2025-06-30 15:52:27,982 - __main__ - INFO - INFO: Pause summaries after 30min silence
+2025-06-30 15:52:27,982 - __main__ - INFO - INFO: Auto-registration disabled
+2025-06-30 15:52:27,982 - __main__ - INFO - INFO: SMS admin commands disabled
+2025-06-30 15:52:27,982 - __main__ - INFO - DEVELOPMENT MODE: Running with mock services for testing
+2025-06-30 15:52:27,983 - __main__ - INFO - 🔧 Setting up production congregation...
+2025-06-30 15:52:28,008 - __main__ - INFO - ✅ Production congregation setup completed with smart reaction tracking
+2025-06-30 15:52:28,009 - __main__ - INFO - SUCCESS: Production Church SMS System: READY FOR PURE MESSAGING
+2025-06-30 15:52:28,009 - __main__ - INFO - INFO: Webhook endpoint: /webhook/sms
+2025-06-30 15:52:28,010 - __main__ - INFO - INFO: Health monitoring: /health
+2025-06-30 15:52:28,010 - __main__ - INFO - INFO: System overview: /
+2025-06-30 15:52:28,011 - __main__ - INFO - INFO: Test endpoint: /test
+2025-06-30 15:52:28,011 - __main__ - INFO - INFO: Enterprise-grade system active
+2025-06-30 15:52:28,012 - __main__ - INFO - INFO: Clean media display enabled
+2025-06-30 15:52:28,012 - __main__ - INFO - INFO: Secure member registration (database only)
+2025-06-30 15:52:28,012 - __main__ - INFO - INFO: Smart reaction tracking active
+2025-06-30 15:52:28,012 - __main__ - INFO - INFO: Reaction summaries: Daily 8 PM + 30min pause
+2025-06-30 15:52:28,013 - __main__ - INFO - INFO: Admin commands completely removed
+2025-06-30 15:52:28,013 - __main__ - INFO - INFO: Serving YesuWay Church congregation
+2025-06-30 15:52:28,087 - werkzeug - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://172.20.10.3:5000
+2025-06-30 15:52:28,088 - werkzeug - INFO - [33mPress CTRL+C to quit[0m
+2025-06-30 15:53:01,051 - werkzeug - INFO - 172.20.10.3 - - [30/Jun/2025 15:53:01] "GET / HTTP/1.1" 200 -
+2025-06-30 15:53:02,067 - werkzeug - INFO - 172.20.10.3 - - [30/Jun/2025 15:53:02] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
