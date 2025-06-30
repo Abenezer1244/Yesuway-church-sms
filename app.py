@@ -17,28 +17,41 @@ from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 import schedule
 
-# Production logging configuration
+# Production logging configuration - Windows compatible
+import sys
+import io
+
+# Set UTF-8 encoding for Windows console
+if sys.platform.startswith('win'):
+    # Force UTF-8 output for Windows
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('production_sms.log'),
+        logging.FileHandler('production_sms.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 # Production Configuration - All from environment variables
-TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
+# For development/testing, you can set these directly here:
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID') or 'your_twilio_account_sid_here'
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN') or 'your_twilio_auth_token_here'
+TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER') or 'your_twilio_phone_number_here'
 
 # Cloudflare R2 Configuration
-R2_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID')
-R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY')
-R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL')
+R2_ACCESS_KEY_ID = os.environ.get('R2_ACCESS_KEY_ID') or 'your_r2_access_key_here'
+R2_SECRET_ACCESS_KEY = os.environ.get('R2_SECRET_ACCESS_KEY') or 'your_r2_secret_key_here'
+R2_ENDPOINT_URL = os.environ.get('R2_ENDPOINT_URL') or 'your_r2_endpoint_here'
 R2_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'church-media-production')
-R2_PUBLIC_URL = os.environ.get('R2_PUBLIC_URL')
+R2_PUBLIC_URL = os.environ.get('R2_PUBLIC_URL') or 'your_r2_public_url_here'
+
+# Development mode check
+DEVELOPMENT_MODE = os.environ.get('DEVELOPMENT_MODE', 'True').lower() == 'true'
 
 # Production Flask app
 app = Flask(__name__)
@@ -54,20 +67,31 @@ class ProductionChurchSMS:
         self.last_regular_message_time = None
         
         # Initialize Twilio client
-        if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+        if DEVELOPMENT_MODE and (not TWILIO_ACCOUNT_SID or TWILIO_ACCOUNT_SID == 'your_twilio_account_sid_here'):
+            logger.warning("DEVELOPMENT MODE: Twilio client disabled - using mock responses")
+            self.twilio_client = None
+        elif TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_ACCOUNT_SID != 'your_twilio_account_sid_here':
             try:
                 self.twilio_client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
                 account = self.twilio_client.api.accounts(TWILIO_ACCOUNT_SID).fetch()
-                logger.info(f"✅ Twilio production connection established: {account.friendly_name}")
+                logger.info(f"SUCCESS: Twilio production connection established: {account.friendly_name}")
             except Exception as e:
-                logger.error(f"❌ Twilio connection failed: {e}")
-                raise
+                logger.error(f"ERROR: Twilio connection failed: {e}")
+                if not DEVELOPMENT_MODE:
+                    raise
         else:
-            logger.error("❌ Missing Twilio credentials")
-            raise ValueError("Twilio credentials required for production")
+            if DEVELOPMENT_MODE:
+                logger.info("DEVELOPMENT MODE: Missing Twilio credentials - continuing with mocks")
+                self.twilio_client = None
+            else:
+                logger.error("ERROR: Missing Twilio credentials")
+                raise ValueError("Twilio credentials required for production")
         
         # Initialize Cloudflare R2 client
-        if R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_ENDPOINT_URL:
+        if DEVELOPMENT_MODE and (not R2_ACCESS_KEY_ID or R2_ACCESS_KEY_ID == 'your_r2_access_key_here'):
+            logger.warning("DEVELOPMENT MODE: R2 client disabled - using local storage")
+            self.r2_client = None
+        elif R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY and R2_ENDPOINT_URL and R2_ACCESS_KEY_ID != 'your_r2_access_key_here':
             try:
                 self.r2_client = boto3.client(
                     's3',
@@ -77,17 +101,22 @@ class ProductionChurchSMS:
                     region_name='auto'
                 )
                 self.r2_client.head_bucket(Bucket=R2_BUCKET_NAME)
-                logger.info(f"✅ Cloudflare R2 production connection established: {R2_BUCKET_NAME}")
+                logger.info(f"SUCCESS: Cloudflare R2 production connection established: {R2_BUCKET_NAME}")
             except Exception as e:
-                logger.error(f"❌ R2 connection failed: {e}")
-                raise
+                logger.error(f"ERROR: R2 connection failed: {e}")
+                if not DEVELOPMENT_MODE:
+                    raise
         else:
-            logger.error("❌ Missing R2 credentials")
-            raise ValueError("R2 credentials required for production")
+            if DEVELOPMENT_MODE:
+                logger.info("DEVELOPMENT MODE: Missing R2 credentials - continuing with local storage")
+                self.r2_client = None
+            else:
+                logger.error("ERROR: Missing R2 credentials")
+                raise ValueError("R2 credentials required for production")
         
         self.init_production_database()
         self.start_reaction_scheduler()
-        logger.info("🚀 Production Church SMS System with Smart Reaction Tracking initialized")
+        logger.info("SUCCESS: Production Church SMS System with Smart Reaction Tracking initialized")
     
     def init_production_database(self):
         """Initialize production database with smart reaction tracking"""
@@ -1060,6 +1089,14 @@ class ProductionChurchSMS:
     
     def send_sms(self, to_phone, message_text, max_retries=3):
         """Send SMS with retry logic"""
+        if DEVELOPMENT_MODE and not self.twilio_client:
+            logger.info(f"DEVELOPMENT MODE: Mock SMS to {to_phone}: {message_text[:50]}...")
+            return {
+                "success": True,
+                "sid": f"mock_sid_{uuid.uuid4().hex[:8]}",
+                "attempt": 1
+            }
+        
         start_time = time.time()
         for attempt in range(max_retries):
             try:
@@ -1072,7 +1109,7 @@ class ProductionChurchSMS:
                 duration_ms = int((time.time() - start_time) * 1000)
                 self.record_performance_metric('sms_send', duration_ms, True)
                 
-                logger.info(f"✅ SMS sent to {to_phone}: {message_obj.sid}")
+                logger.info(f"SUCCESS: SMS sent to {to_phone}: {message_obj.sid}")
                 return {
                     "success": True,
                     "sid": message_obj.sid,
@@ -1080,13 +1117,13 @@ class ProductionChurchSMS:
                 }
                 
             except Exception as e:
-                logger.warning(f"⚠️ SMS attempt {attempt + 1} failed for {to_phone}: {e}")
+                logger.warning(f"WARNING: SMS attempt {attempt + 1} failed for {to_phone}: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1 * (attempt + 1))
                 else:
                     duration_ms = int((time.time() - start_time) * 1000)
                     self.record_performance_metric('sms_send', duration_ms, False, str(e))
-                    logger.error(f"❌ All SMS attempts failed for {to_phone}")
+                    logger.error(f"ERROR: All SMS attempts failed for {to_phone}")
                     return {
                         "success": False,
                         "error": str(e),
@@ -1398,13 +1435,14 @@ class ProductionChurchSMS:
             return "Message processing temporarily unavailable - please try again"
 
 # Initialize production system
-logger.info("🚀 Initializing Production Church SMS System with Smart Reaction Tracking...")
+logger.info("STARTING: Initializing Production Church SMS System with Smart Reaction Tracking...")
 try:
     sms_system = ProductionChurchSMS()
-    logger.info("✅ Production system with smart reaction tracking fully operational")
+    logger.info("SUCCESS: Production system with smart reaction tracking fully operational")
 except Exception as e:
-    logger.critical(f"💥 Production system failed to initialize: {e}")
-    raise
+    logger.critical(f"CRITICAL: Production system failed to initialize: {e}")
+    if not DEVELOPMENT_MODE:
+        raise
 
 def setup_production_congregation():
     """Setup production congregation with registered members"""
@@ -1824,47 +1862,51 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting Production Church SMS System with Smart Reaction Tracking...")
-    logger.info("🏛️ Professional church communication platform")
-    logger.info("🧹 Clean media presentation enabled")
-    logger.info("🔒 Manual registration only - secure access")
-    logger.info("🔇 Smart reaction tracking - silent with summaries")
-    logger.info("🕐 Daily summaries at 8:00 PM")
-    logger.info("⏰ Pause summaries after 30min silence")
-    logger.info("❌ Auto-registration disabled")
-    logger.info("🚫 SMS admin commands disabled")
+    logger.info("STARTING: Production Church SMS System with Smart Reaction Tracking...")
+    logger.info("INFO: Professional church communication platform")
+    logger.info("INFO: Clean media presentation enabled")
+    logger.info("INFO: Manual registration only - secure access")
+    logger.info("INFO: Smart reaction tracking - silent with summaries")
+    logger.info("INFO: Daily summaries at 8:00 PM")
+    logger.info("INFO: Pause summaries after 30min silence")
+    logger.info("INFO: Auto-registration disabled")
+    logger.info("INFO: SMS admin commands disabled")
     
-    # Validate environment
-    if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
-        logger.critical("💥 Missing Twilio credentials")
-        raise SystemExit("Production requires all Twilio credentials")
+    if DEVELOPMENT_MODE:
+        logger.info("DEVELOPMENT MODE: Running with mock services for testing")
     
-    if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
-        logger.critical("💥 Missing R2 credentials")
-        raise SystemExit("Production requires all R2 credentials")
+    # Validate environment for production
+    if not DEVELOPMENT_MODE:
+        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
+            logger.critical("CRITICAL: Missing Twilio credentials")
+            raise SystemExit("Production requires all Twilio credentials")
+        
+        if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT_URL]):
+            logger.critical("CRITICAL: Missing R2 credentials")
+            raise SystemExit("Production requires all R2 credentials")
     
     # Setup congregation
     setup_production_congregation()
     
-    logger.info("🎯 Production Church SMS System: READY FOR PURE MESSAGING")
-    logger.info("📡 Webhook endpoint: /webhook/sms")
-    logger.info("🏥 Health monitoring: /health") 
-    logger.info("📊 System overview: /")
-    logger.info("🧪 Test endpoint: /test")
-    logger.info("🛡️ Enterprise-grade system active")
-    logger.info("🧹 Clean media display enabled")
-    logger.info("🔒 Secure member registration (database only)")
-    logger.info("🔇 Smart reaction tracking active")
-    logger.info("📊 Reaction summaries: Daily 8 PM + 30min pause")
-    logger.info("🚫 Admin commands completely removed")
-    logger.info("🏛️ Serving YesuWay Church congregation")
+    logger.info("SUCCESS: Production Church SMS System: READY FOR PURE MESSAGING")
+    logger.info("INFO: Webhook endpoint: /webhook/sms")
+    logger.info("INFO: Health monitoring: /health") 
+    logger.info("INFO: System overview: /")
+    logger.info("INFO: Test endpoint: /test")
+    logger.info("INFO: Enterprise-grade system active")
+    logger.info("INFO: Clean media display enabled")
+    logger.info("INFO: Secure member registration (database only)")
+    logger.info("INFO: Smart reaction tracking active")
+    logger.info("INFO: Reaction summaries: Daily 8 PM + 30min pause")
+    logger.info("INFO: Admin commands completely removed")
+    logger.info("INFO: Serving YesuWay Church congregation")
     
     # Run production server
     port = int(os.environ.get('PORT', 5000))
     app.run(
         host='0.0.0.0',
         port=port,
-        debug=False,
+        debug=DEVELOPMENT_MODE,
         threaded=True,
         use_reloader=False
     )
