@@ -45,7 +45,7 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max request
 
 class ProductionSmartMediaSystem:
     def __init__(self):
-        """Initialize production-grade smart media system with reaction replacement"""
+        """Initialize production-grade smart media system with enhanced SMS reactions"""
         self.twilio_client = None
         self.r2_client = None
         self.executor = ThreadPoolExecutor(max_workers=10)
@@ -85,7 +85,7 @@ class ProductionSmartMediaSystem:
             raise ValueError("R2 credentials required for production")
         
         self.init_production_database()
-        logger.info("🚀 Production Smart Media System with Reaction Replacement fully initialized")
+        logger.info("🚀 Production Smart Media System with Enhanced SMS Reactions fully initialized")
     
     def init_production_database(self):
         """Initialize production database with optimizations and reaction tracking"""
@@ -154,11 +154,13 @@ class ProductionSmartMediaSystem:
                     large_media_count INTEGER DEFAULT 0,
                     processing_status TEXT DEFAULT 'completed',
                     delivery_status TEXT DEFAULT 'pending',
+                    reaction_summary TEXT DEFAULT '',
+                    last_reaction_update TIMESTAMP,
                     sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
-            # NEW: Reaction tracking table for smart reaction replacement
+            # Enhanced reaction tracking table for count-based display
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS message_reactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,11 +169,10 @@ class ProductionSmartMediaSystem:
                     reactor_name TEXT NOT NULL,
                     reaction_emoji TEXT NOT NULL,
                     previous_reaction_emoji TEXT,
-                    reaction_broadcast_id INTEGER,
+                    is_active BOOLEAN DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (original_message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE,
-                    FOREIGN KEY (reaction_broadcast_id) REFERENCES broadcast_messages (id) ON DELETE SET NULL,
                     UNIQUE(original_message_id, reactor_phone)
                 )
             ''')
@@ -259,9 +260,11 @@ class ProductionSmartMediaSystem:
                 'CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(delivery_status)',
                 'CREATE INDEX IF NOT EXISTS idx_analytics_metric ON system_analytics(metric_name, recorded_at)',
                 'CREATE INDEX IF NOT EXISTS idx_performance_type ON performance_metrics(operation_type, recorded_at)',
-                # NEW: Reaction tracking indexes
+                # Enhanced reaction tracking indexes
                 'CREATE INDEX IF NOT EXISTS idx_reactions_original_msg ON message_reactions(original_message_id)',
                 'CREATE INDEX IF NOT EXISTS idx_reactions_reactor ON message_reactions(reactor_phone)',
+                'CREATE INDEX IF NOT EXISTS idx_reactions_active ON message_reactions(is_active)',
+                'CREATE INDEX IF NOT EXISTS idx_reactions_emoji ON message_reactions(reaction_emoji)',
                 'CREATE INDEX IF NOT EXISTS idx_reactions_unique ON message_reactions(original_message_id, reactor_phone)'
             ]
             
@@ -281,7 +284,7 @@ class ProductionSmartMediaSystem:
             
             conn.commit()
             conn.close()
-            logger.info("✅ Production database initialized with smart reaction tracking")
+            logger.info("✅ Production database initialized with enhanced SMS reaction system")
             
         except Exception as e:
             logger.error(f"❌ Production database initialization failed: {e}")
@@ -298,13 +301,13 @@ class ProductionSmartMediaSystem:
         # Detect various reaction patterns
         reaction_patterns = [
             # Modern reaction patterns: "Laughed at", "Emphasized", "Reacted 😍 to", etc.
-            r"^(Laughed at|Emphasized|Questioned|Liked|Loved|Disliked|Reacted\s*([😀-🿿]+)\s*to)\s*[\"'](.+)[\"']",
+            r'^(Laughed at|Emphasized|Questioned|Liked|Loved|Disliked|Reacted\s*([😀-🿿]+)\s*to)\s*["\'“”](.+)["\'“”]',
             # Single emoji reactions
             r"^([😀-🿿]+)\s*$",
             # Emoji with "to" pattern: "😍 to 'message'"
-            r'^([😀-🿿]+)\s*to\s*["\'](.+)["\']',
+            r'^([😀-🿿]+)\s*to\s*["\'“”](.+)["\'“”]',
             # Apple style: "Loved 'message'"
-            r'^(Loved|Liked|Disliked|Emphasized|Laughed at|Questioned)\s*["\'](.+)["\']'
+            r'^(Loved|Liked|Disliked|Emphasized|Laughed at|Questioned)\s*["\'“”](.+)["\'“”]'
         ]
         
         for pattern in reaction_patterns:
@@ -428,21 +431,66 @@ class ProductionSmartMediaSystem:
             traceback.print_exc()
             return None
 
-    def handle_reaction_replacement(self, reactor_phone, reaction_data, target_message):
-        """Handle smart reaction replacement instead of creating new messages"""
+    def get_reaction_count_summary(self, message_id):
+        """Get count-based reaction summary: '4 reactions: ❤️×2  👍×1  😂×1'"""
+        try:
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            # Get all active reactions for this message
+            cursor.execute('''
+                SELECT reaction_emoji, COUNT(*) as count
+                FROM message_reactions 
+                WHERE original_message_id = ? AND is_active = 1
+                GROUP BY reaction_emoji
+                ORDER BY count DESC, reaction_emoji
+            ''', (message_id,))
+            
+            reaction_counts = cursor.fetchall()
+            conn.close()
+            
+            if not reaction_counts:
+                return ""
+            
+            # Calculate total reactions
+            total_reactions = sum(count for _, count in reaction_counts)
+            
+            # Format count display: ❤️×2  👍×1  😂×1
+            reaction_parts = []
+            for emoji, count in reaction_counts:
+                if count == 1:
+                    reaction_parts.append(emoji)
+                else:
+                    reaction_parts.append(f"{emoji}×{count}")
+            
+            reaction_display = "  ".join(reaction_parts)
+            
+            # Final format: "4 reactions: ❤️×2  👍×1  😂×1"
+            if total_reactions == 1:
+                return f"1 reaction: {reaction_display}"
+            else:
+                return f"{total_reactions} reactions: {reaction_display}"
+                
+        except Exception as e:
+            logger.error(f"❌ Error getting reaction summary: {e}")
+            traceback.print_exc()
+            return ""
+
+    def handle_enhanced_reaction(self, reactor_phone, reaction_data, target_message):
+        """Handle reaction with enhanced SMS count format - NO SPAM MESSAGES"""
         try:
             reactor = self.get_member_info_production(reactor_phone)
             target_msg_id = target_message['id']
             new_emoji = reaction_data['emoji']
             
-            logger.info(f"🔄 Processing reaction replacement: {reactor['name']} reacting '{new_emoji}' to message {target_msg_id}")
+            logger.info(f"🔄 Processing enhanced reaction: {reactor['name']} reacting '{new_emoji}' to message {target_msg_id}")
             
             conn = sqlite3.connect('production_church.db', timeout=30.0)
             cursor = conn.cursor()
             
             # Check if user already has a reaction to this message
             cursor.execute('''
-                SELECT id, reaction_emoji, reaction_broadcast_id 
+                SELECT id, reaction_emoji, is_active 
                 FROM message_reactions 
                 WHERE original_message_id = ? AND reactor_phone = ?
             ''', (target_msg_id, reactor_phone))
@@ -450,144 +498,188 @@ class ProductionSmartMediaSystem:
             existing_reaction = cursor.fetchone()
             
             if existing_reaction:
-                reaction_id, old_emoji, old_broadcast_id = existing_reaction
+                reaction_id, old_emoji, is_active = existing_reaction
                 
-                if old_emoji == new_emoji:
+                if old_emoji == new_emoji and is_active:
                     # Same reaction - remove it (toggle off)
                     logger.info(f"🔄 Removing reaction: {reactor['name']} removing '{old_emoji}' from message {target_msg_id}")
                     
-                    # Delete the reaction record
-                    cursor.execute('DELETE FROM message_reactions WHERE id = ?', (reaction_id,))
+                    cursor.execute('''
+                        UPDATE message_reactions 
+                        SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (reaction_id,))
                     
-                    # Create removal notification broadcast
-                    removal_message = f"💬 {reactor['name']} removed reaction {old_emoji} from:\n\"{target_message['message'][:100]}...\""
+                    action = "removed"
+                    
+                elif old_emoji == new_emoji and not is_active:
+                    # Re-adding same reaction
+                    logger.info(f"🔄 Re-adding reaction: {reactor['name']} adding '{new_emoji}' to message {target_msg_id}")
                     
                     cursor.execute('''
-                        INSERT INTO broadcast_messages 
-                        (from_phone, from_name, original_message, processed_message, message_type, 
-                         processing_status, delivery_status) 
-                        VALUES (?, ?, ?, ?, 'reaction_removal', 'completed', 'pending')
-                    ''', (reactor_phone, reactor['name'], f"Removed {old_emoji}", removal_message))
+                        UPDATE message_reactions 
+                        SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    ''', (reaction_id,))
                     
-                    removal_broadcast_id = cursor.lastrowid
-                    conn.commit()
+                    action = "added"
                     
-                    # Broadcast the removal
-                    recipients = self.get_all_active_members(exclude_phone=reactor_phone)
-                    self.broadcast_to_recipients(recipients, removal_message, removal_broadcast_id)
-                    
-                    conn.close()
-                    return f"✅ Removed your {old_emoji} reaction"
-                
                 else:
                     # Different reaction - update it
                     logger.info(f"🔄 Updating reaction: {reactor['name']} changing '{old_emoji}' to '{new_emoji}' on message {target_msg_id}")
                     
-                    # Update the reaction record
                     cursor.execute('''
                         UPDATE message_reactions 
-                        SET reaction_emoji = ?, previous_reaction_emoji = ?, updated_at = CURRENT_TIMESTAMP
+                        SET reaction_emoji = ?, previous_reaction_emoji = ?, is_active = 1, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                     ''', (new_emoji, old_emoji, reaction_id))
                     
-                    # Create change notification broadcast
-                    change_message = f"💬 {reactor['name']} changed reaction from {old_emoji} to {new_emoji} on:\n\"{target_message['message'][:100]}...\""
-                    
-                    cursor.execute('''
-                        INSERT INTO broadcast_messages 
-                        (from_phone, from_name, original_message, processed_message, message_type, 
-                         processing_status, delivery_status) 
-                        VALUES (?, ?, ?, ?, 'reaction_change', 'completed', 'pending')
-                    ''', (reactor_phone, reactor['name'], f"Changed to {new_emoji}", change_message))
-                    
-                    change_broadcast_id = cursor.lastrowid
-                    
-                    # Update the reaction record with new broadcast ID
-                    cursor.execute('''
-                        UPDATE message_reactions 
-                        SET reaction_broadcast_id = ?
-                        WHERE id = ?
-                    ''', (change_broadcast_id, reaction_id))
-                    
-                    conn.commit()
-                    
-                    # Broadcast the change
-                    recipients = self.get_all_active_members(exclude_phone=reactor_phone)
-                    self.broadcast_to_recipients(recipients, change_message, change_broadcast_id)
-                    
-                    conn.close()
-                    return f"✅ Changed reaction to {new_emoji}"
-            
+                    action = "changed"
             else:
                 # New reaction - add it
                 logger.info(f"🔄 Adding new reaction: {reactor['name']} adding '{new_emoji}' to message {target_msg_id}")
                 
-                # Create new reaction broadcast
-                new_reaction_message = f"💬 {reactor['name']} reacted {new_emoji} to:\n\"{target_message['message'][:100]}...\""
-                
-                cursor.execute('''
-                    INSERT INTO broadcast_messages 
-                    (from_phone, from_name, original_message, processed_message, message_type, 
-                     processing_status, delivery_status) 
-                    VALUES (?, ?, ?, ?, 'reaction_new', 'completed', 'pending')
-                ''', (reactor_phone, reactor['name'], f"Reacted {new_emoji}", new_reaction_message))
-                
-                new_broadcast_id = cursor.lastrowid
-                
-                # Create reaction record
                 cursor.execute('''
                     INSERT INTO message_reactions 
-                    (original_message_id, reactor_phone, reactor_name, reaction_emoji, reaction_broadcast_id) 
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (target_msg_id, reactor_phone, reactor['name'], new_emoji, new_broadcast_id))
+                    (original_message_id, reactor_phone, reactor_name, reaction_emoji, is_active) 
+                    VALUES (?, ?, ?, ?, 1)
+                ''', (target_msg_id, reactor_phone, reactor['name'], new_emoji))
                 
-                conn.commit()
-                
-                # Broadcast the new reaction
-                recipients = self.get_all_active_members(exclude_phone=reactor_phone)
-                self.broadcast_to_recipients(recipients, new_reaction_message, new_broadcast_id)
-                
-                conn.close()
+                action = "added"
+            
+            # Get updated reaction summary
+            reaction_summary = self.get_reaction_count_summary(target_msg_id)
+            
+            # Update the original message record with new reaction summary
+            cursor.execute('''
+                UPDATE broadcast_messages 
+                SET reaction_summary = ?, last_reaction_update = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (reaction_summary, target_msg_id))
+            
+            conn.commit()
+            
+            # Check if we should send an update (smart timing)
+            if self.should_send_reaction_update(target_msg_id, action, reaction_summary):
+                self.send_enhanced_reaction_update(target_message, reaction_summary)
+            
+            conn.close()
+            
+            # Return confirmation to reactor
+            if action == "removed":
+                return f"✅ Removed your {new_emoji} reaction"
+            elif action == "changed":
+                return f"✅ Changed your reaction to {new_emoji}"
+            else:
                 return f"✅ Added {new_emoji} reaction"
         
         except Exception as e:
-            logger.error(f"❌ Error handling reaction replacement: {e}")
+            logger.error(f"❌ Error handling enhanced reaction: {e}")
             traceback.print_exc()
             return "❌ Reaction processing failed"
 
-    def broadcast_to_recipients(self, recipients, message_text, message_id):
-        """Broadcast message to recipients with delivery tracking"""
-        def send_to_member(member):
-            result = self.send_sms_production(member['phone'], message_text)
-            
-            # Log delivery
+    def should_send_reaction_update(self, message_id, action, reaction_summary):
+        """Smart timing: decide when to send reaction updates to avoid spam"""
+        try:
             conn = sqlite3.connect('production_church.db', timeout=30.0)
             cursor = conn.cursor()
+            
+            # Get reaction statistics
             cursor.execute('''
-                INSERT INTO delivery_log 
-                (message_id, member_id, to_phone, delivery_method, delivery_status, 
-                 twilio_message_sid, error_message) 
-                VALUES (?, ?, ?, 'sms', ?, ?, ?)
-            ''', (
-                message_id, member['id'], member['phone'],
-                'delivered' if result['success'] else 'failed',
-                result.get('sid'), result.get('error')
-            ))
-            conn.commit()
+                SELECT COUNT(*) as total_reactions,
+                       COUNT(DISTINCT reactor_phone) as unique_reactors
+                FROM message_reactions 
+                WHERE original_message_id = ? AND is_active = 1
+            ''', (message_id,))
+            
+            total_reactions, unique_reactors = cursor.fetchone()
+            
+            # Get time since last update
+            cursor.execute('''
+                SELECT last_reaction_update 
+                FROM broadcast_messages 
+                WHERE id = ?
+            ''', (message_id,))
+            
+            last_update = cursor.fetchone()[0]
             conn.close()
-        
-        # Execute concurrent delivery
-        futures = []
-        for recipient in recipients:
-            future = self.executor.submit(send_to_member, recipient)
-            futures.append(future)
-        
-        # Wait for all deliveries
-        for future in futures:
-            try:
-                future.result(timeout=30)
-            except Exception as e:
-                logger.error(f"❌ Concurrent delivery error: {e}")
+            
+            # Send update if:
+            # 1. First reaction on a message
+            # 2. Every 3rd reaction  
+            # 3. Someone removes a reaction
+            # 4. 5+ minutes since last update and new activity
+            
+            if total_reactions == 1:
+                logger.info(f"📤 Sending update: First reaction")
+                return True
+            
+            if action == "removed":
+                logger.info(f"📤 Sending update: Reaction removed")
+                return True
+            
+            if total_reactions % 3 == 0:
+                logger.info(f"📤 Sending update: Every 3rd reaction ({total_reactions})")
+                return True
+            
+            if last_update:
+                last_update_time = datetime.fromisoformat(last_update)
+                minutes_since_update = (datetime.now() - last_update_time).total_seconds() / 60
+                if minutes_since_update >= 5:
+                    logger.info(f"📤 Sending update: 5+ minutes since last update")
+                    return True
+            
+            logger.info(f"📝 Not sending update: Smart timing ({total_reactions} reactions)")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error in update timing: {e}")
+            return True  # Default to sending update if error
+
+    def send_enhanced_reaction_update(self, target_message, reaction_summary):
+        """Send enhanced SMS reaction update with count format"""
+        try:
+            # Create enhanced update message
+            message_preview = target_message['message'][:50]
+            if len(target_message['message']) > 50:
+                message_preview += "..."
+            
+            update_message = f"""🔄 Reaction Update:
+💬 {target_message['from_name']}: "{message_preview}"
+
+{reaction_summary}"""
+            
+            # Broadcast to all members except original sender
+            recipients = self.get_all_active_members(exclude_phone=target_message['from_phone'])
+            
+            logger.info(f"📤 Sending enhanced reaction update to {len(recipients)} members")
+            
+            # Use concurrent delivery
+            def send_to_member(member):
+                result = self.send_sms_production(member['phone'], update_message)
+                if result['success']:
+                    logger.info(f"✅ Reaction update sent to {member['name']}")
+                else:
+                    logger.error(f"❌ Failed to send reaction update to {member['name']}: {result['error']}")
+            
+            # Execute concurrent delivery
+            futures = []
+            for recipient in recipients:
+                future = self.executor.submit(send_to_member, recipient)
+                futures.append(future)
+            
+            # Wait for all deliveries
+            for future in futures:
+                try:
+                    future.result(timeout=30)
+                except Exception as e:
+                    logger.error(f"❌ Concurrent delivery error: {e}")
+            
+            logger.info(f"✅ Enhanced reaction update broadcast completed")
+            
+        except Exception as e:
+            logger.error(f"❌ Error sending reaction update: {e}")
+            traceback.print_exc()
 
     def clean_phone_number(self, phone):
         """Production phone number cleaning with validation"""
@@ -985,8 +1077,31 @@ class ProductionSmartMediaSystem:
                         "attempts": max_retries
                     }
     
+    def format_message_with_reactions(self, original_message, sender, message_id, media_links=None):
+        """Format message with reaction count summary"""
+        # Get reaction summary
+        reaction_summary = self.get_reaction_count_summary(message_id)
+        
+        # Build base message
+        if media_links:
+            # Create message with clean media links
+            if len(media_links) == 1:
+                media_item = media_links[0]
+                base_message = f"💬 {sender['name']}:\n{original_message}\n\n🔗 {media_item['display_name']}: {media_item['url']}"
+            else:
+                media_text = "\n".join([f"🔗 {item['display_name']}: {item['url']}" for item in media_links])
+                base_message = f"💬 {sender['name']}:\n{original_message}\n\n{media_text}"
+        else:
+            base_message = f"💬 {sender['name']}:\n{original_message}"
+        
+        # Add reaction summary if present
+        if reaction_summary:
+            return f"{base_message}\n\n{reaction_summary}"
+        else:
+            return base_message
+    
     def broadcast_smart_message_production(self, from_phone, message_text, media_urls=None):
-        """Production smart broadcasting with clean media display"""
+        """Production smart broadcasting with enhanced reaction display"""
         start_time = time.time()
         logger.info(f"📡 Starting production smart broadcast from {from_phone}")
         
@@ -1008,8 +1123,8 @@ class ProductionSmartMediaSystem:
             cursor.execute('''
                 INSERT INTO broadcast_messages 
                 (from_phone, from_name, original_message, processed_message, message_type, 
-                 has_media, media_count, processing_status, delivery_status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 'pending')
+                 has_media, media_count, processing_status, delivery_status, reaction_summary) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 'pending', '')
             ''', (
                 from_phone, sender['name'], message_text, message_text,
                 'media' if media_urls else 'text',
@@ -1032,32 +1147,19 @@ class ProductionSmartMediaSystem:
                 if processing_errors:
                     logger.warning(f"⚠️ Media processing errors: {processing_errors}")
             
-            # Prepare final message with CLEAN media display
-            if clean_media_links:
-                # Create message with clean media links (NO technical details)
-                if len(clean_media_links) == 1:
-                    # Single media item
-                    media_item = clean_media_links[0]
-                    final_message = f"💬 {sender['name']}:\n{message_text}\n\n🔗 {media_item['display_name']}: {media_item['url']}"
-                else:
-                    # Multiple media items
-                    media_text = "\n".join([f"🔗 {item['display_name']}: {item['url']}" for item in clean_media_links])
-                    final_message = f"💬 {sender['name']}:\n{message_text}\n\n{media_text}"
-                
-                message_type = 'clean_media'
-            else:
-                # Regular text message
-                final_message = f"💬 {sender['name']}:\n{message_text}"
-                message_type = 'text'
+            # Format final message with enhanced reaction support
+            final_message = self.format_message_with_reactions(
+                message_text, sender, message_id, clean_media_links
+            )
             
             # Update message with processed content
             conn = sqlite3.connect('production_church.db', timeout=30.0)
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE broadcast_messages 
-                SET processed_message = ?, message_type = ?, large_media_count = ?, processing_status = 'completed'
+                SET processed_message = ?, large_media_count = ?, processing_status = 'completed'
                 WHERE id = ?
-            ''', (final_message, message_type, large_media_count, message_id))
+            ''', (final_message, large_media_count, message_id))
             conn.commit()
             conn.close()
             
@@ -1159,7 +1261,7 @@ class ProductionSmartMediaSystem:
             
             # Return admin confirmation
             if sender['is_admin']:
-                confirmation = f"✅ Production broadcast completed in {total_time:.1f}s\n"
+                confirmation = f"✅ Enhanced broadcast completed in {total_time:.1f}s\n"
                 confirmation += f"📊 Delivered: {delivery_stats['sent']}/{len(recipients)}\n"
                 
                 if large_media_count > 0:
@@ -1167,6 +1269,8 @@ class ProductionSmartMediaSystem:
                 
                 if delivery_stats['failed'] > 0:
                     confirmation += f"⚠️ Failed deliveries: {delivery_stats['failed']}\n"
+                
+                confirmation += f"🔄 Enhanced reactions enabled - count format"
                 
                 return confirmation
             else:
@@ -1193,7 +1297,7 @@ class ProductionSmartMediaSystem:
             return "Production broadcast failed - system administrators notified"
     
     def handle_admin_commands_production(self, from_phone, message_body):
-        """Simplified admin commands with reaction management"""
+        """Enhanced admin commands with reaction system management"""
         if not self.is_admin_production(from_phone):
             return None
         
@@ -1204,15 +1308,19 @@ class ProductionSmartMediaSystem:
             if command.startswith('ADD '):
                 return self.handle_add_member_production(message_body)
             
+            elif command == 'REACTIONS':
+                return self.get_recent_reactions_summary()
+            
             elif command == 'HELP':
                 return ("👑 ADMIN COMMANDS:\n\n"
                        "👥 Member Management:\n"
                        "• ADD +phone Name TO group - Add member\n"
+                       "• REACTIONS - View recent reactions\n"
                        "• HELP - Show this help\n\n"
-                       "🔄 Smart Reaction System:\n"
-                       "• Automatic reaction replacement\n"
-                       "• No more reaction spam\n"
-                       "• Modern messaging experience\n\n"
+                       "🔄 Enhanced Reaction System:\n"
+                       "• Count format: '4 reactions: ❤️×2 👍×1 😂×1'\n"
+                       "• Smart timing updates\n"
+                       "• Zero spam messaging\n\n"
                        "🎯 Industry-level administration")
             
             else:
@@ -1221,6 +1329,59 @@ class ProductionSmartMediaSystem:
         except Exception as e:
             logger.error(f"❌ Admin command error: {e}")
             return f"Admin command failed: {str(e)}"
+
+    def get_recent_reactions_summary(self):
+        """Get recent reactions summary for admin"""
+        try:
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            # Get recent messages with reactions
+            cursor.execute('''
+                SELECT bm.id, bm.from_name, bm.original_message, bm.reaction_summary, bm.sent_at
+                FROM broadcast_messages bm
+                WHERE bm.reaction_summary != '' 
+                AND bm.sent_at > datetime('now', '-7 days')
+                ORDER BY bm.last_reaction_update DESC
+                LIMIT 5
+            ''')
+            
+            recent_reactions = cursor.fetchall()
+            
+            if not recent_reactions:
+                conn.close()
+                return "📊 No recent reactions in the past 7 days."
+            
+            summary_lines = ["📊 RECENT REACTIONS (Last 7 days):\n"]
+            
+            for msg_id, from_name, original_msg, reaction_summary, sent_at in recent_reactions:
+                message_preview = original_msg[:30] + "..." if len(original_msg) > 30 else original_msg
+                summary_lines.append(f"💬 {from_name}: \"{message_preview}\"")
+                summary_lines.append(f"   {reaction_summary}\n")
+            
+            # Get overall stats
+            cursor.execute('''
+                SELECT COUNT(*) as total_reactions,
+                       COUNT(DISTINCT original_message_id) as messages_with_reactions,
+                       COUNT(DISTINCT reactor_phone) as unique_reactors
+                FROM message_reactions 
+                WHERE is_active = 1 
+                AND created_at > datetime('now', '-7 days')
+            ''')
+            
+            total_reactions, messages_with_reactions, unique_reactors = cursor.fetchone()
+            
+            summary_lines.append(f"📈 WEEK SUMMARY:")
+            summary_lines.append(f"• {total_reactions} total reactions")
+            summary_lines.append(f"• {messages_with_reactions} messages received reactions")  
+            summary_lines.append(f"• {unique_reactors} people reacted")
+            
+            conn.close()
+            return "\n".join(summary_lines)
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting reactions summary: {e}")
+            return "❌ Error retrieving reactions summary"
     
     def is_admin_production(self, phone_number):
         """Check admin status with production caching"""
@@ -1276,14 +1437,14 @@ class ProductionSmartMediaSystem:
             conn.commit()
             conn.close()
             
-            return f"✅ Added {name} to Group {group_id}"
+            return f"✅ Added {name} to Group {group_id}\n🔄 Enhanced reactions enabled"
             
         except Exception as e:
             logger.error(f"❌ Add member error: {e}")
             return f"❌ Error adding member: {str(e)}"
     
     def handle_incoming_message_production(self, from_phone, message_body, media_urls):
-        """Production message handler with smart reaction replacement"""
+        """Production message handler with enhanced SMS reactions"""
         logger.info(f"📨 Production message from {from_phone}")
         
         try:
@@ -1312,9 +1473,9 @@ class ProductionSmartMediaSystem:
                 )
                 
                 if target_message:
-                    # Handle smart reaction replacement
-                    response = self.handle_reaction_replacement(from_phone, reaction_data, target_message)
-                    logger.info(f"✅ Reaction processed: {response}")
+                    # Handle enhanced reaction with count format - NO SPAM
+                    response = self.handle_enhanced_reaction(from_phone, reaction_data, target_message)
+                    logger.info(f"✅ Enhanced reaction processed: {response}")
                     return response
                 else:
                     logger.warning(f"⚠️ Could not find target message for reaction")
@@ -1333,9 +1494,10 @@ class ProductionSmartMediaSystem:
                        "✅ Share photos/videos (unlimited size)\n"
                        "✅ Clean media links (no technical details)\n"
                        "✅ Full quality preserved automatically\n"
-                       "✅ Smart reaction replacement (no spam!)\n\n"
+                       "✅ Enhanced reactions with count format\n\n"
                        "📱 Text HELP for this message\n"
-                       "🔄 Reactions update instead of creating new messages\n"
+                       "🔄 Reactions display as: '4 reactions: ❤️×2 👍×1 😂×1'\n"
+                       "🚫 Zero reaction spam - smart updates only\n"
                        "🏛️ Production system - serving 24/7")
             
             # Default: Smart broadcast processing
@@ -1348,10 +1510,10 @@ class ProductionSmartMediaSystem:
             return "Message processing temporarily unavailable - please try again"
 
 # Initialize production system
-logger.info("🚀 Initializing Production Smart Media System with Reaction Replacement...")
+logger.info("🚀 Initializing Production Smart Media System with Enhanced SMS Reactions...")
 try:
     sms_system = ProductionSmartMediaSystem()
-    logger.info("✅ Production system fully operational with smart reaction handling")
+    logger.info("✅ Production system fully operational with enhanced reaction count format")
 except Exception as e:
     logger.critical(f"💥 Production system failed to initialize: {e}")
     raise
@@ -1403,7 +1565,7 @@ def setup_production_congregation():
         conn.commit()
         conn.close()
         
-        logger.info("✅ Production congregation setup completed")
+        logger.info("✅ Production congregation setup completed with enhanced reactions")
         
     except Exception as e:
         logger.error(f"❌ Production setup error: {e}")
@@ -1528,7 +1690,7 @@ def production_health():
         health_data = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "Production Smart Media with Reaction Replacement v3.0",
+            "version": "Production Smart Media with Enhanced SMS Reactions v4.0",
             "environment": "production"
         }
         
@@ -1543,10 +1705,12 @@ def production_health():
         media_count = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM media_files WHERE display_name IS NOT NULL")
         clean_media_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM message_reactions")
-        reaction_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(DISTINCT reactor_phone) FROM message_reactions")
+        cursor.execute("SELECT COUNT(*) FROM message_reactions WHERE is_active = 1")
+        active_reactions = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(DISTINCT reactor_phone) FROM message_reactions WHERE is_active = 1")
         unique_reactors = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE reaction_summary != ''")
+        messages_with_reactions = cursor.fetchone()[0]
         conn.close()
         
         health_data["database"] = {
@@ -1555,8 +1719,9 @@ def production_health():
             "recent_messages_24h": recent_messages,
             "processed_media": media_count,
             "clean_media_display": clean_media_count,
-            "total_reactions": reaction_count,
-            "unique_reactors": unique_reactors
+            "active_reactions": active_reactions,
+            "unique_reactors": unique_reactors,
+            "messages_with_reactions": messages_with_reactions
         }
         
         # Test Twilio
@@ -1580,12 +1745,15 @@ def production_health():
         except Exception as e:
             health_data["r2_storage"] = {"status": "error", "error": str(e)}
         
-        # Reaction replacement features
-        health_data["reaction_system"] = {
+        # Enhanced reaction system features
+        health_data["enhanced_reaction_system"] = {
             "status": "enabled",
-            "features": ["Smart replacement", "No reaction spam", "Pattern detection"],
-            "total_reactions": reaction_count,
-            "unique_users": unique_reactors
+            "format": "count_based",
+            "features": ["Smart timing", "Zero spam", "Count display", "Toggle reactions"],
+            "active_reactions": active_reactions,
+            "unique_users": unique_reactors,
+            "messages_with_reactions": messages_with_reactions,
+            "example_format": "4 reactions: ❤️×2  👍×1  😂×1"
         }
         
         # Clean media features
@@ -1628,11 +1796,14 @@ def production_home():
         cursor.execute("SELECT COUNT(*) FROM media_files WHERE display_name IS NOT NULL")
         clean_media_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM message_reactions")
-        total_reactions = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM message_reactions WHERE is_active = 1")
+        active_reactions = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(DISTINCT reactor_phone) FROM message_reactions")
+        cursor.execute("SELECT COUNT(DISTINCT reactor_phone) FROM message_reactions WHERE is_active = 1")
         unique_reactors = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE reaction_summary != ''")
+        messages_with_reactions = cursor.fetchone()[0]
         
         # Get recent performance
         cursor.execute('''
@@ -1649,7 +1820,7 @@ def production_home():
 🏛️ YesuWay Church SMS Broadcasting System
 📅 Production Environment - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-🚀 PRODUCTION STATUS: FULLY OPERATIONAL WITH SMART REACTIONS
+🚀 PRODUCTION STATUS: ENHANCED SMS REACTIONS ACTIVE
 
 📊 LIVE STATISTICS:
 ✅ Active Members: {member_count}
@@ -1657,17 +1828,18 @@ def production_home():
 ✅ Media Files Processed: {media_processed}
 ✅ Clean Media Display: {clean_media_count}
 ✅ Compression Issues Fixed: {compression_fixed}
-✅ Total Reactions: {total_reactions}
+✅ Active Reactions: {active_reactions}
 ✅ Unique Reactors: {unique_reactors}
+✅ Messages with Reactions: {messages_with_reactions}
 ✅ Average Broadcast Time: {avg_broadcast_time/1000:.1f}s
 ✅ Church Number: {TWILIO_PHONE_NUMBER}
 
-🔄 SMART REACTION REPLACEMENT:
-✅ NO MORE REACTION SPAM - reactions replace each other
-✅ Detects: "Laughed at", "Emphasized", "Reacted 😍 to"
-✅ Updates existing reactions instead of new messages
-✅ Toggle reactions ON/OFF by sending same reaction twice
-✅ Professional reaction management like modern messaging
+🔄 ENHANCED SMS REACTION SYSTEM:
+✅ COUNT FORMAT: "4 reactions: ❤️×2  👍×1  😂×1"
+✅ ZERO SPAM - Smart timing updates only
+✅ TOGGLE REACTIONS - Same reaction twice removes it
+✅ SMART UPDATES - Only when significant changes occur
+✅ PROFESSIONAL DISPLAY - Clean, easy to read format
 
 🧹 CLEAN MEDIA SYSTEM:
 ✅ NO technical filenames shown to users
@@ -1691,39 +1863,42 @@ def production_home():
 ✅ Async Processing: Sub-second webhook response
 ✅ Concurrent Delivery: Optimized broadcasting
 ✅ Clean Media Display: Professional presentation
-✅ Smart Reaction System: No spam, modern UX
+✅ Enhanced SMS Reactions: Count-based, zero spam
 
-👑 ADMIN FEATURES (Simplified):
+👑 ADMIN FEATURES:
 • ADD +phone Name TO group - Add member
+• REACTIONS - View recent reaction summaries
 • HELP - Admin command help
 
 📱 MEMBER EXPERIENCE:
 • Send messages normally to {TWILIO_PHONE_NUMBER}
 • Large files become clean, professional links
-• Reactions replace each other automatically
-• No reaction spam in conversations
+• Reactions display as count format automatically
+• Zero reaction spam in conversations
 • See: "🔗 Photo 1: church.media/photo_20250629.jpg"
-• NOT: "20250629_214401_ec9e07d426eb_media_1.jpg"
+• Reactions: "4 reactions: ❤️×2  👍×1  😂×1"
 • Everyone receives messages via SMS
 • Click links for full-quality media viewing
-• Modern reaction experience like iPhone/Android
+• Modern reaction experience with SMS compatibility
 
 🛡️ PRODUCTION FEATURES:
 • 99.9% uptime target
 • Comprehensive error handling
 • Real-time performance monitoring
 • Clean media presentation (NO technical details)
-• Smart reaction replacement (NO spam)
+• Enhanced SMS reactions (COUNT format)
+• Smart timing (NO spam updates)
 • Automatic scaling and optimization
 • Enterprise-grade security and reliability
 
 🔄 REACTION EXAMPLES:
-✅ Sam reacts 😂 → Everyone sees notification
-✅ Sam changes to ❤️ → Updates previous reaction
-✅ Sam reacts ❤️ again → Removes reaction entirely
-❌ NO MORE: Multiple "Sam laughed at", "Sam emphasized"
+✅ First reaction: "1 reaction: ❤️"
+✅ Multiple same: "3 reactions: ❤️×3"
+✅ Multiple different: "4 reactions: ❤️×2  👍×1  😂×1"
+✅ Smart updates: Only every 3rd reaction or significant changes
+❌ NO MORE: Individual reaction spam messages
 
-💚 SERVING YOUR CONGREGATION 24/7 - ZERO REACTION SPAM
+💚 SERVING YOUR CONGREGATION 24/7 - ENHANCED SMS EXPERIENCE
         """
         
     except Exception as e:
@@ -1732,7 +1907,7 @@ def production_home():
 
 @app.route('/test', methods=['GET', 'POST'])
 def test_endpoint():
-    """Enhanced test endpoint with reaction testing"""
+    """Enhanced test endpoint with reaction count testing"""
     try:
         if request.method == 'POST':
             # Simulate webhook processing
@@ -1759,14 +1934,20 @@ def test_endpoint():
                 "reaction_data": reaction_data,
                 "timestamp": datetime.now().isoformat(),
                 "processing": "async",
-                "features": ["Clean media display", "Smart reaction replacement"]
+                "features": ["Clean media display", "Enhanced SMS reactions", "Count format"]
             })
         
         else:
             return jsonify({
                 "status": "✅ Test endpoint active",
                 "method": "GET",
-                "features": ["Production ready", "Clean media display", "Smart reaction replacement"],
+                "features": ["Production ready", "Clean media display", "Enhanced SMS reactions"],
+                "reaction_format": "count_based",
+                "reaction_examples": [
+                    "1 reaction: ❤️",
+                    "3 reactions: ❤️×2  👍×1",
+                    "4 reactions: ❤️×2  👍×1  😂×1"
+                ],
                 "reaction_patterns": ["Laughed at 'message'", "Emphasized 'text'", "Reacted 😍 to 'content'"],
                 "usage": "POST with From and Body parameters to test",
                 "test_reactions": [
@@ -1784,47 +1965,57 @@ def test_endpoint():
 
 @app.route('/reaction-demo', methods=['GET'])
 def reaction_demo():
-    """Demonstrate smart reaction replacement"""
+    """Demonstrate enhanced SMS reaction count format"""
     return f"""
-🔄 SMART REACTION REPLACEMENT DEMONSTRATION
+🔄 ENHANCED SMS REACTION DEMONSTRATION
 
 📱 OLD BEHAVIOR (Spammy):
 💬 John: "Good morning everyone!"
 💬 Sam: "Laughed at 'Good morning everyone!'"
 💬 Sam: "Emphasized 'Good morning everyone!'"  
 💬 Sam: "Reacted ❤️ to 'Good morning everyone!'"
-💬 Sam: "Laughed at 'Good morning everyone!'"
+💬 Mike: "Liked 'Good morning everyone!'"
 
 ❌ Result: 4 extra messages cluttering the conversation!
 
-🎯 NEW BEHAVIOR (Clean):
+🎯 NEW BEHAVIOR (Enhanced SMS Count Format):
 💬 John: "Good morning everyone!"
-💬 Sam reacted 😂 to: "Good morning everyone!"
-💬 Sam changed reaction from 😂 to ‼️ on: "Good morning everyone!"
-💬 Sam changed reaction from ‼️ to ❤️ on: "Good morning everyone!"
-💬 Sam removed reaction ❤️ from: "Good morning everyone!"
 
-✅ Result: Clean, professional reaction updates!
+🔄 Reaction Update:
+💬 John: "Good morning everyone!"
 
-🔄 SMART FEATURES:
-✅ Detects reaction patterns automatically
-✅ Replaces previous reactions instead of adding new ones
+1 reaction: 😂
+
+🔄 Reaction Update:
+💬 John: "Good morning everyone!"
+
+3 reactions: ❤️×2  😂×1
+
+✅ Result: Clean count format with smart timing!
+
+🔄 ENHANCED FEATURES:
+✅ Count format: "4 reactions: ❤️×2  👍×1  😂×1"
+✅ Smart timing - only updates every 3rd reaction
 ✅ Toggle reactions ON/OFF by repeating same reaction
-✅ Works with any emoji and reaction type
-✅ Matches messages intelligently using AI
-✅ Professional presentation like modern messaging apps
+✅ Zero spam - no individual reaction messages
+✅ Professional SMS presentation
+✅ Works on ANY phone (iPhone, Android, flip phones)
 
-🎯 SUPPORTED PATTERNS:
-• "Laughed at 'message text'"
-• "Emphasized 'message text'"  
-• "Questioned 'message text'"
-• "Liked 'message text'"
-• "Loved 'message text'"
-• "Reacted 😍 to 'message text'"
-• Single emoji: "😂"
-• Emoji with text: "❤️ to 'message'"
+🎯 COUNT FORMAT EXAMPLES:
+• "1 reaction: ❤️"
+• "2 reactions: ❤️×2"
+• "3 reactions: ❤️×2  👍×1"
+• "4 reactions: ❤️×2  👍×1  😂×1"
+• "7 reactions: ❤️×3  😂×2  👍×1  ❓×1"
 
-💚 NO MORE REACTION SPAM - PROFESSIONAL MESSAGING!
+🚀 SMART TIMING:
+✅ First reaction → Immediate update
+✅ Every 3rd reaction → Update sent
+✅ Reaction removed → Immediate update
+✅ 5+ minutes since last update → Update if new activity
+❌ Individual reactions → No spam messages
+
+💚 PERFECT SMS SOLUTION - NO SPAM, CLEAN FORMAT!
     """
 
 @app.route('/clean-media-demo', methods=['GET'])
@@ -1840,11 +2031,14 @@ Check out Sunday's service!
 🔗 Video 1: church.media/video_20250629_140322.mp4
 🔗 Photo 2: church.media/photo_20250629_140335.jpg
 
+4 reactions: ❤️×2  👍×1  😂×1
+
 ❌ WHAT THEY DON'T SEE (Technical):
 • 20250629_214401_ec9e07d426eb_media_1
 • JPEG Image • 46 KB  
 • pub-d5f4333e04b54751a08073acfc818c8a.r2.dev
 • Technical metadata or file details
+• Individual reaction spam messages
 
 ✨ BENEFITS:
 ✅ Professional presentation
@@ -1852,10 +2046,14 @@ Check out Sunday's service!
 ✅ No confusing technical information
 ✅ Direct media access
 ✅ User-friendly experience
+✅ Count-based reactions (no spam)
 
-🔄 COMBINED WITH SMART REACTIONS:
-💬 Sam reacted ❤️ to: "Check out Sunday's service!"
-(Instead of: "Sam loved 'Check out Sunday's...'")
+🔄 ENHANCED WITH COUNT REACTIONS:
+💬 Sam: "Beautiful service today!"
+
+3 reactions: ❤️×2  😂×1
+
+(Instead of 3 separate reaction messages)
 
 🎯 Perfect for church communication!
     """
@@ -1875,7 +2073,7 @@ def internal_error_production(error):
     return jsonify({
         "error": "Internal server error", 
         "status": "production",
-        "features": ["Clean media display", "Smart reaction replacement"]
+        "features": ["Clean media display", "Enhanced SMS reactions", "Count format"]
     }), 500
 
 @app.errorhandler(Exception)
@@ -1912,10 +2110,10 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting Production Smart Media System with Reaction Replacement...")
+    logger.info("🚀 Starting Production Smart Media System with Enhanced SMS Reactions...")
     logger.info("🏛️ Industry-level church communication platform")
     logger.info("🧹 Clean media presentation - NO technical details shown")
-    logger.info("🔄 Smart reaction replacement - NO reaction spam")
+    logger.info("🔄 Enhanced SMS reactions - COUNT format, ZERO spam")
     logger.info("📱 Professional user experience enabled")
     
     # Validate production environment
@@ -1940,7 +2138,8 @@ if __name__ == '__main__':
     logger.info("🛡️ Enterprise-grade error handling active")
     logger.info("⚡ Smart media processing: ENABLED")
     logger.info("🧹 Clean display: NO technical details shown")
-    logger.info("🔄 Smart reaction replacement: NO SPAM")
+    logger.info("🔄 Enhanced SMS reactions: COUNT format, SMART timing")
+    logger.info("🚫 Zero reaction spam: ELIMINATED")
     logger.info("📱 Unlimited file size support: ACTIVE")
     logger.info("🏛️ Serving YesuWay Church congregation")
     
