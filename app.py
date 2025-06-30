@@ -15,6 +15,7 @@ import re
 import traceback
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
+import schedule
 
 # Production logging configuration
 logging.basicConfig(
@@ -45,10 +46,12 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max request
 
 class ProductionChurchSMS:
     def __init__(self):
-        """Initialize production-grade church SMS broadcasting system"""
+        """Initialize production-grade church SMS broadcasting system with smart reaction tracking"""
         self.twilio_client = None
         self.r2_client = None
         self.executor = ThreadPoolExecutor(max_workers=10)
+        self.conversation_pause_timer = None
+        self.last_regular_message_time = None
         
         # Initialize Twilio client
         if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
@@ -83,10 +86,11 @@ class ProductionChurchSMS:
             raise ValueError("R2 credentials required for production")
         
         self.init_production_database()
-        logger.info("🚀 Production Church SMS System initialized successfully")
+        self.start_reaction_scheduler()
+        logger.info("🚀 Production Church SMS System with Smart Reaction Tracking initialized")
     
     def init_production_database(self):
-        """Initialize production database with optimizations"""
+        """Initialize production database with smart reaction tracking"""
         try:
             conn = sqlite3.connect('production_church.db', timeout=30.0)
             conn.execute('PRAGMA journal_mode=WAL;')
@@ -151,7 +155,36 @@ class ProductionChurchSMS:
                     large_media_count INTEGER DEFAULT 0,
                     processing_status TEXT DEFAULT 'completed',
                     delivery_status TEXT DEFAULT 'pending',
-                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    is_reaction BOOLEAN DEFAULT FALSE,
+                    target_message_id INTEGER,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id)
+                )
+            ''')
+            
+            # Smart reaction tracking table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS message_reactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_message_id INTEGER NOT NULL,
+                    reactor_phone TEXT NOT NULL,
+                    reactor_name TEXT NOT NULL,
+                    reaction_emoji TEXT NOT NULL,
+                    reaction_text TEXT NOT NULL,
+                    is_processed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (target_message_id) REFERENCES broadcast_messages (id) ON DELETE CASCADE
+                )
+            ''')
+            
+            # Reaction summary tracking
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS reaction_summaries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    summary_type TEXT NOT NULL,
+                    summary_content TEXT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    messages_included INTEGER DEFAULT 0
                 )
             ''')
             
@@ -224,17 +257,19 @@ class ProductionChurchSMS:
                 )
             ''')
             
-            # Create indexes for performance
+            # Create indexes for performance including reaction tracking
             indexes = [
                 'CREATE INDEX IF NOT EXISTS idx_members_phone ON members(phone_number)',
                 'CREATE INDEX IF NOT EXISTS idx_members_active ON members(active)',
                 'CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON broadcast_messages(sent_at)',
-                'CREATE INDEX IF NOT EXISTS idx_messages_status ON broadcast_messages(delivery_status)',
+                'CREATE INDEX IF NOT EXISTS idx_messages_is_reaction ON broadcast_messages(is_reaction)',
+                'CREATE INDEX IF NOT EXISTS idx_messages_target ON broadcast_messages(target_message_id)',
+                'CREATE INDEX IF NOT EXISTS idx_reactions_target ON message_reactions(target_message_id)',
+                'CREATE INDEX IF NOT EXISTS idx_reactions_processed ON message_reactions(is_processed)',
+                'CREATE INDEX IF NOT EXISTS idx_reactions_created ON message_reactions(created_at)',
                 'CREATE INDEX IF NOT EXISTS idx_media_message_id ON media_files(message_id)',
                 'CREATE INDEX IF NOT EXISTS idx_media_status ON media_files(upload_status)',
-                'CREATE INDEX IF NOT EXISTS idx_media_public_url ON media_files(public_url)',
                 'CREATE INDEX IF NOT EXISTS idx_delivery_message_id ON delivery_log(message_id)',
-                'CREATE INDEX IF NOT EXISTS idx_delivery_member_id ON delivery_log(member_id)',
                 'CREATE INDEX IF NOT EXISTS idx_delivery_status ON delivery_log(delivery_status)',
                 'CREATE INDEX IF NOT EXISTS idx_analytics_metric ON system_analytics(metric_name, recorded_at)',
                 'CREATE INDEX IF NOT EXISTS idx_performance_type ON performance_metrics(operation_type, recorded_at)'
@@ -256,12 +291,452 @@ class ProductionChurchSMS:
             
             conn.commit()
             conn.close()
-            logger.info("✅ Production database initialized successfully")
+            logger.info("✅ Production database with smart reaction tracking initialized")
             
         except Exception as e:
             logger.error(f"❌ Database initialization failed: {e}")
             traceback.print_exc()
             raise
+
+    def detect_reaction_pattern(self, message_body):
+        """Detect if message is a reaction using industry-standard patterns"""
+        if not message_body:
+            return None
+        
+        message_body = message_body.strip()
+        
+        # Industry-standard reaction patterns
+        reaction_patterns = [
+            # Apple iPhone reactions
+            r'^(Loved|Liked|Disliked|Laughed at|Emphasized|Questioned)\s*["\'""](.+)["\'""]',
+            # Android reactions  
+            r'^(Reacted\s*([😀-🿿]+)\s*to)\s*["\'""](.+)["\'""]',
+            # Single emoji reactions
+            r"^([😀-🿿]+)\s*$",
+            # Generic reaction patterns
+            r'^([😀-🿿]+)\s*to\s*["\'""](.+)["\'""]',
+            # Text-based reactions
+            r'^(👍|👎|❤️|😂|😢|😮|😡)\s*$'
+        ]
+        
+        for pattern in reaction_patterns:
+            match = re.match(pattern, message_body, re.UNICODE)
+            if match:
+                groups = match.groups()
+                
+                if len(groups) >= 2:
+                    reaction_type = groups[0]
+                    target_message = groups[-1] if len(groups) > 1 else ""
+                else:
+                    reaction_type = groups[0]
+                    target_message = ""
+                
+                # Map reaction types to emojis for consistent tracking
+                reaction_mapping = {
+                    'Loved': '❤️',
+                    'Liked': '👍',
+                    'Disliked': '👎',
+                    'Laughed at': '😂',
+                    'Emphasized': '‼️',
+                    'Questioned': '❓'
+                }
+                
+                emoji = reaction_mapping.get(reaction_type, reaction_type)
+                
+                # Extract emoji if reaction_type contains emoji
+                emoji_match = re.search(r'([😀-🿿]+)', emoji)
+                if emoji_match:
+                    emoji = emoji_match.group(1)
+                
+                logger.info(f"🎯 Industry reaction detected: '{emoji}' to message fragment: '{target_message[:50]}...'")
+                
+                return {
+                    'emoji': emoji,
+                    'target_message_fragment': target_message[:100],
+                    'reaction_type': reaction_type,
+                    'full_pattern': message_body
+                }
+        
+        return None
+
+    def find_target_message_for_reaction(self, target_fragment, reactor_phone, hours_back=24):
+        """Find the target message for a reaction using smart matching"""
+        try:
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            # Look for recent non-reaction messages
+            since_time = datetime.now() - timedelta(hours=hours_back)
+            
+            cursor.execute('''
+                SELECT id, original_message, from_phone, from_name, sent_at
+                FROM broadcast_messages 
+                WHERE sent_at > ? 
+                AND from_phone != ?
+                AND is_reaction = 0
+                ORDER BY sent_at DESC
+                LIMIT 10
+            ''', (since_time.isoformat(), reactor_phone))
+            
+            recent_messages = cursor.fetchall()
+            conn.close()
+            
+            if not recent_messages:
+                logger.info(f"🔍 No recent messages found for reaction matching")
+                return None
+            
+            # Smart matching algorithm
+            best_match = None
+            best_score = 0
+            
+            if target_fragment:
+                target_words = set(target_fragment.lower().split())
+                
+                for msg_id, original_msg, from_phone, from_name, sent_at in recent_messages:
+                    if not original_msg:
+                        continue
+                    
+                    message_words = set(original_msg.lower().split())
+                    
+                    # Calculate similarity score
+                    if target_words and message_words:
+                        common_words = target_words.intersection(message_words)
+                        score = len(common_words) / max(len(target_words), len(message_words))
+                        
+                        # Boost score for exact substring matches
+                        if target_fragment.lower() in original_msg.lower():
+                            score += 0.5
+                        
+                        if score > best_score and score > 0.3:
+                            best_score = score
+                            best_match = {
+                                'id': msg_id,
+                                'message': original_msg,
+                                'from_phone': from_phone,
+                                'from_name': from_name,
+                                'sent_at': sent_at,
+                                'similarity_score': score
+                            }
+            
+            # Fallback to most recent message if no good match
+            if not best_match and recent_messages:
+                msg_id, original_msg, from_phone, from_name, sent_at = recent_messages[0]
+                best_match = {
+                    'id': msg_id,
+                    'message': original_msg,
+                    'from_phone': from_phone,
+                    'from_name': from_name,
+                    'sent_at': sent_at,
+                    'similarity_score': 0.0
+                }
+                logger.info(f"🎯 Using most recent message as fallback: Message {msg_id}")
+            
+            if best_match:
+                logger.info(f"✅ Found reaction target (score: {best_match['similarity_score']:.2f}): "
+                           f"Message {best_match['id']} from {best_match['from_name']}")
+                
+            return best_match
+        
+        except Exception as e:
+            logger.error(f"❌ Error finding reaction target: {e}")
+            traceback.print_exc()
+            return None
+
+    def store_reaction_silently(self, reactor_phone, reaction_data, target_message):
+        """Store reaction silently without broadcasting - industry approach"""
+        try:
+            reactor = self.get_member_info(reactor_phone)
+            if not reactor:
+                logger.warning(f"❌ Reaction from unregistered number: {reactor_phone}")
+                return False
+            
+            target_msg_id = target_message['id']
+            reaction_emoji = reaction_data['emoji']
+            reaction_text = reaction_data['full_pattern']
+            
+            logger.info(f"🔇 Storing silent reaction: {reactor['name']} reacted '{reaction_emoji}' to message {target_msg_id}")
+            
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            # Store reaction silently
+            cursor.execute('''
+                INSERT INTO message_reactions 
+                (target_message_id, reactor_phone, reactor_name, reaction_emoji, reaction_text, is_processed) 
+                VALUES (?, ?, ?, ?, ?, 0)
+            ''', (target_msg_id, reactor_phone, reactor['name'], reaction_emoji, reaction_text))
+            
+            # Mark original message to track it has reactions
+            cursor.execute('''
+                UPDATE broadcast_messages 
+                SET message_type = 'text_with_reactions'
+                WHERE id = ?
+            ''', (target_msg_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Reaction stored silently - no broadcast sent")
+            return True
+        
+        except Exception as e:
+            logger.error(f"❌ Error storing silent reaction: {e}")
+            traceback.print_exc()
+            return False
+
+    def start_reaction_scheduler(self):
+        """Start the smart reaction summary scheduler"""
+        def run_scheduler():
+            # Schedule daily summary at 8 PM
+            schedule.every().day.at("20:00").do(self.send_daily_reaction_summary)
+            
+            while True:
+                schedule.run_pending()
+                time.sleep(60)  # Check every minute
+        
+        # Start scheduler in background thread
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        logger.info("✅ Smart reaction scheduler started - Daily summaries at 8 PM")
+
+    def reset_conversation_pause_timer(self):
+        """Reset the 30-minute conversation pause timer"""
+        if self.conversation_pause_timer:
+            self.conversation_pause_timer.cancel()
+        
+        # Set timer for 30 minutes from now
+        self.conversation_pause_timer = threading.Timer(1800.0, self.send_pause_reaction_summary)  # 30 minutes
+        self.conversation_pause_timer.start()
+        self.last_regular_message_time = datetime.now()
+        logger.debug("🕐 Conversation pause timer reset - 30 minutes")
+
+    def send_pause_reaction_summary(self):
+        """Send reaction summary after 30 minutes of conversation pause"""
+        try:
+            # Get unprocessed reactions from the last 2 hours
+            since_time = datetime.now() - timedelta(hours=2)
+            
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT mr.target_message_id, bm.from_name, bm.original_message, 
+                       mr.reaction_emoji, COUNT(*) as reaction_count
+                FROM message_reactions mr
+                JOIN broadcast_messages bm ON mr.target_message_id = bm.id
+                WHERE mr.is_processed = 0 
+                AND mr.created_at > ?
+                GROUP BY mr.target_message_id, mr.reaction_emoji
+                ORDER BY bm.sent_at DESC
+            ''', (since_time.isoformat(),))
+            
+            reaction_data = cursor.fetchall()
+            
+            if not reaction_data:
+                conn.close()
+                logger.info("🔇 No unprocessed reactions for pause summary")
+                return
+            
+            # Build smart summary
+            summary_lines = ["📊 Recent reactions:"]
+            messages_included = 0
+            
+            # Group by message
+            message_reactions = {}
+            for target_id, from_name, original_msg, emoji, count in reaction_data:
+                if target_id not in message_reactions:
+                    message_reactions[target_id] = {
+                        'from_name': from_name,
+                        'message': original_msg,
+                        'reactions': {}
+                    }
+                message_reactions[target_id]['reactions'][emoji] = count
+            
+            for target_id, msg_data in message_reactions.items():
+                messages_included += 1
+                message_preview = msg_data['message'][:40] + "..." if len(msg_data['message']) > 40 else msg_data['message']
+                
+                # Format reaction counts
+                reaction_parts = []
+                for emoji, count in msg_data['reactions'].items():
+                    if count == 1:
+                        reaction_parts.append(emoji)
+                    else:
+                        reaction_parts.append(f"{emoji}×{count}")
+                
+                reaction_display = " ".join(reaction_parts)
+                summary_lines.append(f"💬 {msg_data['from_name']}: \"{message_preview}\" → {reaction_display}")
+            
+            # Mark all reactions as processed
+            cursor.execute('''
+                UPDATE message_reactions 
+                SET is_processed = 1 
+                WHERE is_processed = 0 
+                AND created_at > ?
+            ''', (since_time.isoformat(),))
+            
+            # Store summary record
+            summary_content = "\n".join(summary_lines)
+            cursor.execute('''
+                INSERT INTO reaction_summaries (summary_type, summary_content, messages_included) 
+                VALUES ('pause_summary', ?, ?)
+            ''', (summary_content, messages_included))
+            
+            conn.commit()
+            conn.close()
+            
+            # Broadcast summary to congregation
+            self.broadcast_summary_to_congregation(summary_content)
+            
+            logger.info(f"✅ Pause reaction summary sent - {messages_included} messages included")
+        
+        except Exception as e:
+            logger.error(f"❌ Error sending pause reaction summary: {e}")
+            traceback.print_exc()
+
+    def send_daily_reaction_summary(self):
+        """Send daily reaction summary at 8 PM"""
+        try:
+            # Get reactions from today that haven't been processed
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            conn = sqlite3.connect('production_church.db', timeout=30.0)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT mr.target_message_id, bm.from_name, bm.original_message, 
+                       mr.reaction_emoji, COUNT(*) as reaction_count
+                FROM message_reactions mr
+                JOIN broadcast_messages bm ON mr.target_message_id = bm.id
+                WHERE mr.is_processed = 0 
+                AND mr.created_at >= ?
+                GROUP BY mr.target_message_id, mr.reaction_emoji
+                ORDER BY reaction_count DESC, bm.sent_at DESC
+                LIMIT 10
+            ''', (today_start.isoformat(),))
+            
+            reaction_data = cursor.fetchall()
+            
+            if not reaction_data:
+                conn.close()
+                logger.info("🔇 No reactions for daily summary")
+                return
+            
+            # Build comprehensive daily summary
+            summary_lines = ["📊 TODAY'S REACTIONS:"]
+            messages_included = 0
+            total_reactions = 0
+            
+            # Group by message
+            message_reactions = {}
+            for target_id, from_name, original_msg, emoji, count in reaction_data:
+                total_reactions += count
+                if target_id not in message_reactions:
+                    message_reactions[target_id] = {
+                        'from_name': from_name,
+                        'message': original_msg,
+                        'reactions': {},
+                        'total_count': 0
+                    }
+                message_reactions[target_id]['reactions'][emoji] = count
+                message_reactions[target_id]['total_count'] += count
+            
+            # Sort by total reaction count
+            sorted_messages = sorted(message_reactions.items(), 
+                                   key=lambda x: x[1]['total_count'], reverse=True)
+            
+            for target_id, msg_data in sorted_messages[:5]:  # Top 5 most reacted messages
+                messages_included += 1
+                message_preview = msg_data['message'][:50] + "..." if len(msg_data['message']) > 50 else msg_data['message']
+                
+                # Format reaction counts
+                reaction_parts = []
+                for emoji, count in msg_data['reactions'].items():
+                    if count == 1:
+                        reaction_parts.append(emoji)
+                    else:
+                        reaction_parts.append(f"{emoji}×{count}")
+                
+                reaction_display = " ".join(reaction_parts)
+                total_for_msg = msg_data['total_count']
+                summary_lines.append(f"• {msg_data['from_name']}: \"{message_preview}\" ({total_for_msg} reactions: {reaction_display})")
+            
+            # Add engagement stats
+            cursor.execute('''
+                SELECT COUNT(DISTINCT reactor_phone) 
+                FROM message_reactions 
+                WHERE is_processed = 0 
+                AND created_at >= ?
+            ''', (today_start.isoformat(),))
+            
+            unique_reactors = cursor.fetchone()[0]
+            summary_lines.append(f"\n🎯 Today's engagement: {total_reactions} reactions from {unique_reactors} members")
+            
+            # Mark all today's reactions as processed
+            cursor.execute('''
+                UPDATE message_reactions 
+                SET is_processed = 1 
+                WHERE is_processed = 0 
+                AND created_at >= ?
+            ''', (today_start.isoformat(),))
+            
+            # Store summary record
+            summary_content = "\n".join(summary_lines)
+            cursor.execute('''
+                INSERT INTO reaction_summaries (summary_type, summary_content, messages_included) 
+                VALUES ('daily_summary', ?, ?)
+            ''', (summary_content, messages_included))
+            
+            conn.commit()
+            conn.close()
+            
+            # Broadcast summary to congregation
+            self.broadcast_summary_to_congregation(summary_content)
+            
+            logger.info(f"✅ Daily reaction summary sent - {messages_included} messages, {total_reactions} reactions")
+        
+        except Exception as e:
+            logger.error(f"❌ Error sending daily reaction summary: {e}")
+            traceback.print_exc()
+
+    def broadcast_summary_to_congregation(self, summary_content):
+        """Broadcast reaction summary to entire congregation"""
+        try:
+            # Get all active members
+            recipients = self.get_all_active_members()
+            
+            if not recipients:
+                logger.warning("❌ No active recipients for summary broadcast")
+                return
+            
+            logger.info(f"📤 Broadcasting reaction summary to {len(recipients)} members")
+            
+            # Concurrent delivery of summary
+            def send_summary_to_member(member):
+                result = self.send_sms(member['phone'], summary_content)
+                if result['success']:
+                    logger.info(f"✅ Summary delivered to {member['name']}")
+                else:
+                    logger.error(f"❌ Summary failed to {member['name']}: {result['error']}")
+            
+            # Execute concurrent delivery
+            futures = []
+            for recipient in recipients:
+                future = self.executor.submit(send_summary_to_member, recipient)
+                futures.append(future)
+            
+            # Wait for all deliveries
+            for future in futures:
+                try:
+                    future.result(timeout=30)
+                except Exception as e:
+                    logger.error(f"❌ Summary delivery error: {e}")
+            
+            logger.info(f"✅ Reaction summary broadcast completed")
+        
+        except Exception as e:
+            logger.error(f"❌ Error broadcasting summary: {e}")
+            traceback.print_exc()
 
     def clean_phone_number(self, phone):
         """Clean and standardize phone numbers"""
@@ -633,7 +1108,7 @@ class ProductionChurchSMS:
         return formatted_message
     
     def broadcast_message(self, from_phone, message_text, media_urls=None):
-        """Broadcast message to all registered members"""
+        """Broadcast message to all registered members with smart reaction tracking"""
         start_time = time.time()
         logger.info(f"📡 Starting broadcast from {from_phone}")
         
@@ -657,8 +1132,8 @@ class ProductionChurchSMS:
             cursor.execute('''
                 INSERT INTO broadcast_messages 
                 (from_phone, from_name, original_message, processed_message, message_type, 
-                 has_media, media_count, processing_status, delivery_status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 'pending')
+                 has_media, media_count, processing_status, delivery_status, is_reaction) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 'pending', 0)
             ''', (
                 from_phone, sender['name'], message_text, message_text,
                 'media' if media_urls else 'text',
@@ -696,6 +1171,9 @@ class ProductionChurchSMS:
             ''', (final_message, large_media_count, message_id))
             conn.commit()
             conn.close()
+            
+            # Reset conversation pause timer for regular messages
+            self.reset_conversation_pause_timer()
             
             # Broadcast with concurrent delivery
             delivery_stats = {
@@ -793,7 +1271,7 @@ class ProductionChurchSMS:
             logger.info(f"📊 Broadcast completed in {total_time:.2f}s: "
                        f"{delivery_stats['sent']} sent, {delivery_stats['failed']} failed")
             
-            # Return admin confirmation
+            # Return confirmation to sender if admin
             if sender['is_admin']:
                 confirmation = f"✅ Broadcast completed in {total_time:.1f}s\n"
                 confirmation += f"📊 Delivered: {delivery_stats['sent']}/{len(recipients)}\n"
@@ -804,6 +1282,7 @@ class ProductionChurchSMS:
                 if delivery_stats['failed'] > 0:
                     confirmation += f"⚠️ Failed deliveries: {delivery_stats['failed']}\n"
                 
+                confirmation += f"🔇 Smart reaction tracking: Active"
                 return confirmation
             else:
                 return None  # No confirmation for regular members
@@ -845,184 +1324,8 @@ class ProductionChurchSMS:
             logger.error(f"❌ Admin check error: {e}")
             return False
     
-    def handle_admin_commands(self, from_phone, message_body):
-        """Handle admin commands"""
-        if not self.is_admin(from_phone):
-            return None
-        
-        command = message_body.upper().strip()
-        
-        try:
-            if command.startswith('ADD '):
-                return self.add_member_command(message_body)
-            
-            elif command == 'STATS':
-                return self.get_system_stats()
-            
-            elif command == 'MEMBERS':
-                return self.get_members_list()
-            
-            elif command == 'HELP':
-                return ("👑 ADMIN COMMANDS:\n\n"
-                       "👥 Member Management:\n"
-                       "• ADD +phone Name TO group - Add member\n"
-                       "• STATS - System statistics\n"
-                       "• MEMBERS - List all members\n"
-                       "• HELP - Show this help\n\n"
-                       "📋 Note: Only registered members can send messages\n"
-                       "🎯 Professional church administration")
-            
-            else:
-                return None
-                
-        except Exception as e:
-            logger.error(f"❌ Admin command error: {e}")
-            return f"Admin command failed: {str(e)}"
-
-    def add_member_command(self, message_body):
-        """Handle ADD member command"""
-        try:
-            # Parse: ADD +1234567890 John Smith TO 1
-            parts = message_body.split()
-            if len(parts) < 5 or parts[0].upper() != 'ADD' or parts[-2].upper() != 'TO':
-                return "❌ Format: ADD +1234567890 First Last TO 1"
-            
-            phone = parts[1]
-            group_id = int(parts[-1])
-            name = ' '.join(parts[2:-2])
-            
-            if group_id not in [1, 2, 3]:
-                return "❌ Group must be 1, 2, or 3"
-            
-            phone = self.clean_phone_number(phone)
-            
-            conn = sqlite3.connect('production_church.db', timeout=30.0)
-            cursor = conn.cursor()
-            
-            # Add member
-            cursor.execute('''
-                INSERT OR REPLACE INTO members (phone_number, name, is_admin, active) 
-                VALUES (?, ?, ?, 1)
-            ''', (phone, name, False))
-            
-            member_id = cursor.lastrowid
-            
-            # Add to group
-            cursor.execute('''
-                INSERT OR IGNORE INTO group_members (group_id, member_id) 
-                VALUES (?, ?)
-            ''', (group_id, member_id))
-            
-            conn.commit()
-            conn.close()
-            
-            return f"✅ Added {name} to Group {group_id}\n📱 They can now send messages to congregation"
-            
-        except Exception as e:
-            logger.error(f"❌ Add member error: {e}")
-            return f"❌ Error adding member: {str(e)}"
-
-    def get_system_stats(self):
-        """Get comprehensive system statistics"""
-        try:
-            conn = sqlite3.connect('production_church.db', timeout=30.0)
-            cursor = conn.cursor()
-            
-            # Get member stats
-            cursor.execute("SELECT COUNT(*) FROM members WHERE active = 1")
-            total_members = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM members WHERE active = 1 AND is_admin = 1")
-            admin_count = cursor.fetchone()[0]
-            
-            # Get message stats
-            cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-7 days')")
-            messages_week = cursor.fetchone()[0]
-            
-            cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours')")
-            messages_day = cursor.fetchone()[0]
-            
-            # Get media stats
-            cursor.execute("SELECT COUNT(*) FROM media_files WHERE upload_status = 'completed'")
-            media_processed = cursor.fetchone()[0]
-            
-            # Get delivery stats
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_deliveries,
-                    SUM(CASE WHEN delivery_status = 'delivered' THEN 1 ELSE 0 END) as successful,
-                    AVG(delivery_time_ms) as avg_time
-                FROM delivery_log 
-                WHERE delivered_at > datetime('now', '-7 days')
-            ''')
-            delivery_stats = cursor.fetchone()
-            total_deliveries, successful_deliveries, avg_delivery_time = delivery_stats
-            
-            conn.close()
-            
-            success_rate = (successful_deliveries / total_deliveries * 100) if total_deliveries > 0 else 0
-            avg_time_formatted = f"{avg_delivery_time:.0f}ms" if avg_delivery_time else "N/A"
-            
-            return f"""📊 SYSTEM STATISTICS
-
-👥 MEMBERS:
-• Total active: {total_members}
-• Administrators: {admin_count}
-
-📨 MESSAGES:
-• Past 24 hours: {messages_day}
-• Past 7 days: {messages_week}
-
-📎 MEDIA:
-• Files processed: {media_processed}
-
-📤 DELIVERY (7 days):
-• Total deliveries: {total_deliveries}
-• Success rate: {success_rate:.1f}%
-• Average time: {avg_time_formatted}
-
-🎯 System running smoothly"""
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting stats: {e}")
-            return "❌ Error retrieving system statistics"
-    
-    def get_members_list(self):
-        """Get list of all active members"""
-        try:
-            conn = sqlite3.connect('production_church.db', timeout=30.0)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT m.name, m.phone_number, m.is_admin, g.name as group_name, m.message_count
-                FROM members m
-                JOIN group_members gm ON m.id = gm.member_id
-                JOIN groups g ON gm.group_id = g.id
-                WHERE m.active = 1
-                ORDER BY m.name
-            ''')
-            
-            members = cursor.fetchall()
-            conn.close()
-            
-            if not members:
-                return "📋 No active members found"
-            
-            lines = ["📋 ACTIVE MEMBERS:\n"]
-            
-            for name, phone, is_admin, group_name, msg_count in members:
-                admin_marker = " 👑" if is_admin else ""
-                lines.append(f"• {name}{admin_marker}")
-                lines.append(f"  {phone} | {group_name} | {msg_count} msgs\n")
-            
-            return "\n".join(lines)
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting members list: {e}")
-            return "❌ Error retrieving members list"
-    
     def handle_incoming_message(self, from_phone, message_body, media_urls):
-        """Handle incoming messages - registered members only"""
+        """Handle incoming messages with smart reaction detection"""
         logger.info(f"📨 Incoming message from {from_phone}")
         
         try:
@@ -1049,11 +1352,29 @@ class ProductionChurchSMS:
             
             logger.info(f"👤 Sender: {member['name']} (Admin: {member['is_admin']})")
             
-            # Handle admin commands
-            admin_response = self.handle_admin_commands(from_phone, message_body)
-            if admin_response:
-                logger.info(f"🔧 Admin command processed")
-                return admin_response
+            # CRITICAL: Detect reactions FIRST and handle silently
+            reaction_data = self.detect_reaction_pattern(message_body)
+            if reaction_data:
+                logger.info(f"🔇 Silent reaction detected: {member['name']} reacted '{reaction_data['emoji']}'")
+                
+                # Find target message
+                target_message = self.find_target_message_for_reaction(
+                    reaction_data['target_message_fragment'], 
+                    from_phone
+                )
+                
+                if target_message:
+                    # Store reaction silently - NO BROADCAST
+                    success = self.store_reaction_silently(from_phone, reaction_data, target_message)
+                    if success:
+                        logger.info(f"✅ Reaction stored silently - will appear in next summary")
+                        return None  # No response, no broadcast - completely silent
+                    else:
+                        logger.error(f"❌ Failed to store reaction silently")
+                        return None
+                else:
+                    logger.warning(f"⚠️ Could not find target message for reaction")
+                    return None  # Still silent even if target not found
             
             # Handle member commands
             if message_body.upper() == 'HELP':
@@ -1061,12 +1382,14 @@ class ProductionChurchSMS:
                        "✅ Send messages to entire congregation\n"
                        "✅ Share photos/videos (unlimited size)\n"
                        "✅ Clean media links (no technical details)\n"
-                       "✅ Full quality preserved automatically\n\n"
+                       "✅ Full quality preserved automatically\n"
+                       "✅ Smart reaction tracking (silent)\n\n"
                        "📱 Text HELP for this message\n"
+                       "🔇 Reactions tracked silently - summaries at 8 PM daily\n"
                        "🏛️ Production system - serving 24/7")
             
-            # Default: Broadcast message
-            logger.info(f"📡 Processing broadcast...")
+            # Default: Broadcast regular message
+            logger.info(f"📡 Processing regular message broadcast...")
             return self.broadcast_message(from_phone, message_body, media_urls)
             
         except Exception as e:
@@ -1075,10 +1398,10 @@ class ProductionChurchSMS:
             return "Message processing temporarily unavailable - please try again"
 
 # Initialize production system
-logger.info("🚀 Initializing Production Church SMS System...")
+logger.info("🚀 Initializing Production Church SMS System with Smart Reaction Tracking...")
 try:
     sms_system = ProductionChurchSMS()
-    logger.info("✅ Production system fully operational")
+    logger.info("✅ Production system with smart reaction tracking fully operational")
 except Exception as e:
     logger.critical(f"💥 Production system failed to initialize: {e}")
     raise
@@ -1129,7 +1452,7 @@ def setup_production_congregation():
         conn.commit()
         conn.close()
         
-        logger.info("✅ Production congregation setup completed")
+        logger.info("✅ Production congregation setup completed with smart reaction tracking")
         
     except Exception as e:
         logger.error(f"❌ Production setup error: {e}")
@@ -1139,7 +1462,7 @@ def setup_production_congregation():
 
 @app.route('/webhook/sms', methods=['POST'])
 def handle_sms_webhook():
-    """SMS webhook handler"""
+    """SMS webhook handler with smart reaction detection"""
     request_start = time.time()
     request_id = str(uuid.uuid4())[:8]
     
@@ -1179,13 +1502,13 @@ def handle_sms_webhook():
                     from_number, message_body, media_urls
                 )
                 
-                # Send admin response if needed
+                # Send response if needed (reactions return None - no response)
                 if response and sms_system.is_admin(from_number):
                     result = sms_system.send_sms(from_number, response)
                     if result['success']:
-                        logger.info(f"📤 [{request_id}] Admin response sent: {result['sid']}")
+                        logger.info(f"📤 [{request_id}] Response sent: {result['sid']}")
                     else:
-                        logger.error(f"❌ [{request_id}] Admin response failed: {result['error']}")
+                        logger.error(f"❌ [{request_id}] Response failed: {result['error']}")
                 
             except Exception as e:
                 logger.error(f"❌ [{request_id}] Async processing error: {e}")
@@ -1248,12 +1571,12 @@ def handle_status_callback():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Production health check"""
+    """Production health check with smart reaction tracking"""
     try:
         health_data = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "Production Church SMS System v1.0",
+            "version": "Production Church SMS System with Smart Reaction Tracking v3.0",
             "environment": "production"
         }
         
@@ -1262,8 +1585,10 @@ def health_check():
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM members WHERE active = 1")
         member_count = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours')")
+        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours') AND is_reaction = 0")
         recent_messages = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM message_reactions WHERE created_at > datetime('now', '-24 hours')")
+        recent_reactions = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM media_files WHERE upload_status = 'completed'")
         media_count = cursor.fetchone()[0]
         conn.close()
@@ -1272,6 +1597,7 @@ def health_check():
             "status": "connected",
             "active_members": member_count,
             "recent_messages_24h": recent_messages,
+            "recent_reactions_24h": recent_reactions,
             "processed_media": media_count
         }
         
@@ -1296,10 +1622,20 @@ def health_check():
         except Exception as e:
             health_data["r2_storage"] = {"status": "error", "error": str(e)}
         
+        health_data["smart_reaction_system"] = {
+            "status": "active",
+            "silent_tracking": "enabled",
+            "daily_summary_time": "8:00 PM",
+            "pause_summary_trigger": "30 minutes silence",
+            "recent_reactions_24h": recent_reactions
+        }
+        
         health_data["features"] = {
             "clean_media_display": "enabled",
             "manual_registration_only": "enabled",
-            "auto_registration": "disabled"
+            "auto_registration": "disabled",
+            "smart_reaction_tracking": "enabled",
+            "admin_commands": "disabled"
         }
         
         return jsonify(health_data), 200
@@ -1314,7 +1650,7 @@ def health_check():
 
 @app.route('/', methods=['GET'])
 def home():
-    """Production home page"""
+    """Production home page with smart reaction tracking"""
     try:
         conn = sqlite3.connect('production_church.db', timeout=5.0)
         cursor = conn.cursor()
@@ -1322,8 +1658,11 @@ def home():
         cursor.execute("SELECT COUNT(*) FROM members WHERE active = 1")
         member_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours')")
+        cursor.execute("SELECT COUNT(*) FROM broadcast_messages WHERE sent_at > datetime('now', '-24 hours') AND is_reaction = 0")
         messages_24h = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM message_reactions WHERE created_at > datetime('now', '-24 hours')")
+        reactions_24h = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(*) FROM media_files WHERE upload_status = 'completed'")
         media_processed = cursor.fetchone()[0]
@@ -1334,19 +1673,28 @@ def home():
 🏛️ YesuWay Church SMS Broadcasting System
 📅 Production Environment - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-🚀 PRODUCTION STATUS: ACTIVE
+🚀 PRODUCTION STATUS: SMART REACTION TRACKING ACTIVE
 
 📊 LIVE STATISTICS:
 ✅ Registered Members: {member_count}
 ✅ Messages (24h): {messages_24h}
+✅ Silent Reactions (24h): {reactions_24h}
 ✅ Media Files Processed: {media_processed}
 ✅ Church Number: {TWILIO_PHONE_NUMBER}
+
+🔇 SMART REACTION SYSTEM:
+✅ SILENT TRACKING - No reaction spam to congregation
+✅ DAILY SUMMARIES - Sent every day at 8:00 PM
+✅ PAUSE SUMMARIES - After 30 minutes of conversation silence
+✅ INDUSTRY PATTERNS - Detects all major reaction formats
+✅ SMART MATCHING - Links reactions to correct messages
 
 🛡️ SECURITY FEATURES:
 ✅ REGISTERED MEMBERS ONLY
 ✅ No auto-registration
-✅ Admin-controlled membership
+✅ Manual member management (database only)
 ✅ Unknown numbers rejected
+✅ No SMS admin commands
 
 🧹 CLEAN MEDIA SYSTEM:
 ✅ Professional presentation
@@ -1361,19 +1709,21 @@ def home():
 ✅ Professional broadcasting
 ✅ Comprehensive error handling
 
-👑 ADMIN COMMANDS:
-• ADD +phone Name TO group
-• STATS - System statistics
-• MEMBERS - List all members
-• HELP - Command help
-
 📱 MEMBER EXPERIENCE:
 • Only registered members can send
 • Unknown numbers receive rejection
 • Large files become clean links
+• Reactions tracked silently
+• Daily summaries of engagement
 • Professional presentation
 
-💚 SERVING YOUR CONGREGATION 24/7
+🕐 REACTION SUMMARY SCHEDULE:
+• Daily at 8:00 PM - Top reacted messages
+• After 30min silence - Recent activity
+
+🎯 RESULT: Zero reaction spam + Full engagement tracking!
+
+💚 SERVING YOUR CONGREGATION 24/7 - SMART & SILENT
         """
         
     except Exception as e:
@@ -1382,13 +1732,16 @@ def home():
 
 @app.route('/test', methods=['GET', 'POST'])
 def test_endpoint():
-    """Test endpoint"""
+    """Test endpoint with reaction pattern testing"""
     try:
         if request.method == 'POST':
             from_number = request.form.get('From', '+1234567890')
             message_body = request.form.get('Body', 'test message')
             
             logger.info(f"🧪 Test message: {from_number} -> {message_body}")
+            
+            # Test reaction detection
+            reaction_data = sms_system.detect_reaction_pattern(message_body)
             
             def test_async():
                 result = sms_system.handle_incoming_message(from_number, message_body, [])
@@ -1400,16 +1753,32 @@ def test_endpoint():
                 "status": "✅ Test processed",
                 "from": from_number,
                 "body": message_body,
+                "reaction_detected": reaction_data is not None,
+                "reaction_data": reaction_data,
                 "timestamp": datetime.now().isoformat(),
-                "processing": "async"
+                "processing": "async",
+                "smart_reaction_system": "active",
+                "admin_commands": "disabled"
             })
         
         else:
             return jsonify({
                 "status": "✅ Test endpoint active",
                 "method": "GET",
-                "features": ["Clean media display", "Manual registration only"],
-                "usage": "POST with From and Body parameters to test"
+                "features": ["Clean media display", "Manual registration only", "Smart reaction tracking", "No admin commands"],
+                "reaction_patterns": [
+                    "Loved \"message text\"",
+                    "Laughed at \"message text\"", 
+                    "Emphasized \"message text\"",
+                    "Reacted 😍 to \"message text\"",
+                    "❤️",
+                    "😂"
+                ],
+                "test_examples": [
+                    "curl -X POST /test -d 'From=+1234567890&Body=Loved \"test message\"'",
+                    "curl -X POST /test -d 'From=+1234567890&Body=😂'"
+                ],
+                "usage": "POST with From and Body parameters to test reaction detection"
             })
             
     except Exception as e:
@@ -1455,11 +1824,15 @@ def after_request(response):
     return response
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting Production Church SMS System...")
+    logger.info("🚀 Starting Production Church SMS System with Smart Reaction Tracking...")
     logger.info("🏛️ Professional church communication platform")
     logger.info("🧹 Clean media presentation enabled")
     logger.info("🔒 Manual registration only - secure access")
+    logger.info("🔇 Smart reaction tracking - silent with summaries")
+    logger.info("🕐 Daily summaries at 8:00 PM")
+    logger.info("⏰ Pause summaries after 30min silence")
     logger.info("❌ Auto-registration disabled")
+    logger.info("🚫 SMS admin commands disabled")
     
     # Validate environment
     if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER]):
@@ -1473,14 +1846,17 @@ if __name__ == '__main__':
     # Setup congregation
     setup_production_congregation()
     
-    logger.info("🎯 Production Church SMS System: READY")
+    logger.info("🎯 Production Church SMS System: READY FOR PURE MESSAGING")
     logger.info("📡 Webhook endpoint: /webhook/sms")
     logger.info("🏥 Health monitoring: /health") 
     logger.info("📊 System overview: /")
     logger.info("🧪 Test endpoint: /test")
     logger.info("🛡️ Enterprise-grade system active")
     logger.info("🧹 Clean media display enabled")
-    logger.info("🔒 Secure member registration")
+    logger.info("🔒 Secure member registration (database only)")
+    logger.info("🔇 Smart reaction tracking active")
+    logger.info("📊 Reaction summaries: Daily 8 PM + 30min pause")
+    logger.info("🚫 Admin commands completely removed")
     logger.info("🏛️ Serving YesuWay Church congregation")
     
     # Run production server
