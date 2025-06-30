@@ -1,4 +1,5 @@
 import os
+from sched import scheduler
 import boto3
 import requests
 import hashlib
@@ -15,7 +16,7 @@ import re
 import traceback
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
-#import schedule
+import schedule
 
 # Production logging configuration - Windows compatible
 import sys
@@ -517,10 +518,10 @@ class ProductionChurchSMS:
         """Start the smart reaction summary scheduler"""
         def run_scheduler():
             # Schedule daily summary at 8 PM
-            schedule.every().day.at("20:00").do(self.send_daily_reaction_summary)
+            scheduler.every().day.at("20:00").do(self.send_daily_reaction_summary)
             
             while True:
-                schedule.run_pending()
+                scheduler.run_pending()
                 time.sleep(60)  # Check every minute
         
         # Start scheduler in background thread
