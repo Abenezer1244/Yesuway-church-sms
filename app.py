@@ -16,7 +16,7 @@ import re
 import traceback
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
-import schedule
+#import schedule
 
 # Production logging configuration - Windows compatible
 import sys
